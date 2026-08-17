@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { realpath } from "node:fs/promises"
+import { lstat, mkdir, readlink, realpath, symlink } from "node:fs/promises"
+import path from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 import { CommandError, DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
@@ -17,6 +19,8 @@ import {
 } from "./validation.js"
 
 const inFlight = new Set<string>()
+const SHELL_READY_RETRY_MS = 100
+const SHELL_READY_TIMEOUT_MS = 5_000
 
 function createAgentName(branch: string): string {
   const branchPart = branch
@@ -83,6 +87,64 @@ export function parseWorktreeResult(stdout: string): WorktreeInfo {
       ? { alreadyOpen: result.already_open }
       : {}),
   }
+}
+
+function parsePaneCount(stdout: string): number {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (error) {
+    throw new DispatchError("Herdr pane layout returned malformed JSON.", {
+      cause: error,
+    })
+  }
+
+  const panes = (parsed as { result?: { layout?: { panes?: unknown } } }).result
+    ?.layout?.panes
+  if (!Array.isArray(panes)) {
+    throw new DispatchError("Herdr pane layout did not include result.layout.panes.")
+  }
+
+  return panes.length
+}
+
+function herdrErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof CommandError)) return undefined
+
+  try {
+    const parsed = JSON.parse(error.result.stderr) as {
+      error?: { code?: unknown }
+    }
+    return typeof parsed.error?.code === "string" ? parsed.error.code : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isEnvironmentFile(relativePath: string): boolean {
+  const name = path.basename(relativePath)
+  const excludedDirectories = new Set([
+    ".git",
+    ".herdr",
+    ".worktrees",
+    "node_modules",
+  ])
+  const isProjectPath = relativePath
+    .split(path.sep)
+    .every((segment) => !excludedDirectories.has(segment))
+  return (
+    isProjectPath &&
+    (name === ".env" || name.startsWith(".env.")) &&
+    !name.endsWith(".example")
+  )
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  )
 }
 
 export interface ExistingWorktreeInfo {
@@ -248,7 +310,7 @@ export class HerdrDispatcher {
         }
       }
 
-      this.log("info", existingWorktree ? "Opening existing Herdr worktree workspace" : "Creating focused Herdr worktree workspace", {
+      this.log("info", existingWorktree ? "Opening existing Herdr worktree workspace" : "Creating background Herdr worktree workspace", {
         repository: repository.root,
         mode: validated.mode,
         branch: validated.branch,
@@ -267,7 +329,7 @@ export class HerdrDispatcher {
               existingWorktree.path,
               "--label",
               validated.title,
-              "--focus",
+              "--no-focus",
             ]
           : [
               "worktree",
@@ -280,7 +342,7 @@ export class HerdrDispatcher {
               base,
               "--label",
               validated.title,
-              "--focus",
+              "--no-focus",
             ],
         cwd: repository.root,
         ...(signal ? { signal } : {}),
@@ -307,6 +369,57 @@ export class HerdrDispatcher {
         paneId: worktree.paneId,
         ...(worktree.path ? { worktreePath: worktree.path } : {}),
       })
+      if (!worktree.path) {
+        throw new DispatchError(
+          "Herdr did not report the worktree path required for environment linking and pane setup.",
+        )
+      }
+
+      const linkedEnvironmentFiles = await this.linkEnvironmentFiles(
+        repository.root,
+        worktree.path,
+        signal,
+      )
+      this.log("info", "Linked local environment files into worktree", {
+        workspaceId: worktree.workspaceId,
+        linkedEnvironmentFiles,
+      })
+
+      const layoutOutput = await runStage(
+        this.dependencies,
+        {
+          executable: "herdr",
+          args: ["pane", "layout", "--pane", worktree.paneId],
+          cwd: repository.root,
+          ...(signal ? { signal } : {}),
+        },
+        "Could not inspect the Herdr worktree pane layout.",
+      )
+      if (parsePaneCount(layoutOutput) === 1) {
+        await runStage(
+          this.dependencies,
+          {
+            executable: "herdr",
+            args: [
+              "pane",
+              "split",
+              "--pane",
+              worktree.paneId,
+              "--direction",
+              "down",
+              "--ratio",
+              "0.7",
+              "--cwd",
+              worktree.path,
+              "--no-focus",
+            ],
+            cwd: repository.root,
+            ...(signal ? { signal } : {}),
+          },
+          "Could not create the 70/30 Herdr worktree pane layout.",
+        )
+      }
+
       const agentName = (this.dependencies.createAgentName ?? createAgentName)(
         validated.branch,
       )
@@ -334,11 +447,7 @@ export class HerdrDispatcher {
         cwd: repository.root,
         ...(signal ? { signal } : {}),
       }
-      await runStage(
-        this.dependencies,
-        startCommand,
-        "The worktree exists, but no OpenCode agent was started. No cleanup was attempted.",
-      )
+      await this.startAgentWhenShellReady(startCommand)
       this.log("info", "OpenCode Build agent started", {
         paneId: worktree.paneId,
         agentName,
@@ -404,6 +513,94 @@ export class HerdrDispatcher {
       throw new DispatchError(
         "The primary checkout has uncommitted files that will not be included in the feature worktree. Confirm this explicitly and dispatch with allowDirtyRoot only if that is intentional.",
       )
+    }
+  }
+
+  private async linkEnvironmentFiles(
+    repositoryRoot: string,
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const output = await runStage(
+      this.dependencies,
+      {
+        executable: "git",
+        args: [
+          "ls-files",
+          "-z",
+          "--others",
+          "--ignored",
+          "--exclude-standard",
+          "--",
+          ":(glob).env",
+          ":(glob).env.*",
+          ":(glob)**/.env",
+          ":(glob)**/.env.*",
+        ],
+        cwd: repositoryRoot,
+        ...(signal ? { signal } : {}),
+      },
+      "Could not discover ignored environment files in the primary checkout.",
+    )
+    const environmentFiles = output
+      .split("\0")
+      .filter(Boolean)
+      .filter(isEnvironmentFile)
+    let linked = 0
+
+    for (const relativePath of environmentFiles) {
+      const source = path.join(repositoryRoot, relativePath)
+      const destination = path.join(worktreePath, relativePath)
+      const sourceStats = await lstat(source)
+      if (!sourceStats.isFile() && !sourceStats.isSymbolicLink()) continue
+
+      try {
+        const destinationStats = await lstat(destination)
+        if (destinationStats.isSymbolicLink()) {
+          const target = await readlink(destination)
+          if (path.resolve(path.dirname(destination), target) === source) continue
+        }
+
+        throw new DispatchError(
+          `Refusing to overwrite existing worktree environment file ${JSON.stringify(relativePath)}.`,
+        )
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error
+      }
+
+      await mkdir(path.dirname(destination), { recursive: true })
+      await symlink(source, destination)
+      linked += 1
+    }
+
+    return linked
+  }
+
+  private async startAgentWhenShellReady(command: CommandSpec): Promise<void> {
+    const deadline = Date.now() + SHELL_READY_TIMEOUT_MS
+
+    while (true) {
+      try {
+        await this.dependencies.runner.run(command)
+        return
+      } catch (error) {
+        if (
+          herdrErrorCode(error) !== "agent_pane_busy" ||
+          Date.now() >= deadline
+        ) {
+          if (error instanceof CommandError || error instanceof DispatchError) {
+            throw new DispatchError(
+              `The worktree exists, but no OpenCode agent was started. No cleanup was attempted.\n${error.message}`,
+              { cause: error },
+            )
+          }
+          throw error
+        }
+
+        await delay(SHELL_READY_RETRY_MS, undefined, {
+          ...(command.signal ? { signal: command.signal } : {}),
+        })
+      }
     }
   }
 

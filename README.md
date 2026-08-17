@@ -1,6 +1,6 @@
 # opencode-herdr-dispatch
 
-An OpenCode plugin that turns an approved implementation plan into a Herdr feature workspace. It creates or reopens a Git worktree, starts an OpenCode Build agent, and delivers a self-contained handoff.
+An OpenCode plugin that turns an approved implementation plan into a background Herdr feature workspace. It creates or reopens a Git worktree, links local environment files, prepares a 70/30 agent and shell layout, starts an OpenCode Build agent, and delivers a self-contained handoff.
 
 The user-facing workflow is the included `/feature` command. It interprets natural language with OpenCode Plan, then calls the plugin with one deterministic strategy:
 
@@ -69,7 +69,9 @@ The command inspects the repository, resolves branch intent, creates a concise s
 
 The primary checkout must be clean by default because uncommitted files are not present in a new worktree. After explicit user confirmation, Plan may set `allowDirtyRoot` for an intentional override.
 
-Remote sources are fetched before worktree creation. When the target branch already has a registered worktree, the plugin opens or focuses it instead of creating a duplicate checkout. Starting a fresh Build agent still requires the selected worktree's root pane to be an available shell.
+Remote sources are fetched before worktree creation. When the target branch already has a registered worktree, the plugin opens it instead of creating a duplicate checkout. Starting a fresh Build agent still requires the selected worktree's root pane to be an available shell.
+
+Feature workspaces are created without changing the user's focus. New single-pane workspaces are split 70/30 with the Build agent in the top pane and an interactive shell in the bottom pane. Ignored `.env` and `.env.*` files from the primary checkout are symlinked into matching worktree paths; tracked examples are left untouched and existing destination files are never overwritten. Agent startup tolerates the short interval between pane creation and shell readiness.
 
 ## Worktree Lifecycle
 
@@ -92,8 +94,10 @@ git remote
 git fetch --no-tags <remote> <branch>
 git rev-parse --verify <source>^{commit}
 herdr worktree list --cwd <repository-root>
-herdr worktree create --cwd <root> --branch <branch> --base <base> --label <title> --focus
-herdr worktree open --cwd <root> --path <path> --label <title> --focus
+herdr worktree create --cwd <root> --branch <branch> --base <base> --label <title> --no-focus
+herdr worktree open --cwd <root> --path <path> --label <title> --no-focus
+herdr pane layout --pane <pane>
+herdr pane split --pane <pane> --direction down --ratio 0.7 --cwd <worktree> --no-focus
 herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build
 herdr agent prompt <name> <plan>
 ```
