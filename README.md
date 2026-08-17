@@ -98,11 +98,10 @@ herdr worktree create --cwd <root> --branch <branch> --base <base> --label <titl
 herdr worktree open --cwd <root> --path <path> --label <title> --no-focus
 herdr pane layout --pane <pane>
 herdr pane split --pane <pane> --direction down --ratio 0.7 --cwd <worktree> --no-focus
-herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build
-herdr agent prompt <name> <plan>
+herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build --prompt <plan>
 ```
 
-Plan contents are redacted from command errors and logs. Failed prompts are never retried automatically, and partial dispatches are never cleaned up automatically.
+Plan contents are redacted from command errors and logs. Partial dispatches are never cleaned up automatically.
 
 ## Development
 
