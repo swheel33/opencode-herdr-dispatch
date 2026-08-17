@@ -105,7 +105,7 @@ Plan contents are redacted from command errors and logs. Failed prompts are neve
 ```sh
 npm ci
 npm run typecheck
-npm test
+npm run build
 ```
 
 ## License

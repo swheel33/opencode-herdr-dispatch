@@ -5,25 +5,7 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 import { formatDispatchResult, HerdrDispatcher } from "./dispatch.js"
 import { NodeCommandRunner } from "./process.js"
 
-export {
-  formatDispatchResult,
-  HerdrDispatcher,
-  parseWorktreeListResult,
-  parseWorktreeResult,
-} from "./dispatch.js"
-export { CommandError, DispatchError, formatCommandFailure } from "./errors.js"
-export { NodeCommandRunner } from "./process.js"
-export type * from "./types.js"
-export {
-  MAX_TITLE_LENGTH,
-  MIN_PLAN_LENGTH,
-  resolveRepository,
-  validateBranch,
-  validateDispatchInput,
-  validatePlan,
-} from "./validation.js"
-
-export const HerdrDispatchPlugin: Plugin = async ({ client }) => {
+const HerdrDispatchPlugin: Plugin = async ({ client }) => {
   const dispatcher = new HerdrDispatcher({
     runner: new NodeCommandRunner(),
     realpath,
