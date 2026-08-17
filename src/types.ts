@@ -17,10 +17,16 @@ export interface CommandRunner {
   run(command: CommandSpec): Promise<CommandResult>
 }
 
+export type DispatchMode = "new" | "continue" | "branch_from"
+
 export interface DispatchInput {
+  mode: DispatchMode
+  title: string
   branch: string
   plan: string
   base?: string
+  source?: string
+  allowDirtyRoot?: boolean
 }
 
 export interface RepositoryInfo {
@@ -34,11 +40,16 @@ export interface WorktreeInfo {
   paneId: string
   path?: string
   branch?: string
+  alreadyOpen?: boolean
 }
 
 export interface DispatchResult extends WorktreeInfo {
+  mode: DispatchMode
+  title: string
   branch: string
   base: string
+  source?: string
+  reusedWorktree: boolean
   agentName: string
   planDelivered: true
   worktreeBranch?: string

@@ -1,134 +1,111 @@
 # opencode-herdr-dispatch
 
-A small OpenCode V1 plugin that hands a self-contained implementation plan from a read-only Project Chat session to a fresh OpenCode Build agent in a new Herdr Git worktree workspace.
+An OpenCode plugin that turns an approved implementation plan into a Herdr feature workspace. It creates or reopens a Git worktree, starts an OpenCode Build agent, and delivers a self-contained handoff.
 
-The plugin exposes one typed tool, `dispatch_to_herdr`, with `branch`, `plan`, and optional `base` inputs. It uses argument-array process spawning, performs no hidden network operations, and never modifies the primary checkout or cleans up worktrees automatically.
+The user-facing workflow is the included `/feature` command. It interprets natural language with OpenCode Plan, then calls the plugin with one deterministic strategy:
+
+- `new`: create a new branch from `HEAD` or an explicit base.
+- `continue`: fetch and continue an existing local or remote branch. This is the default when an existing branch, PR, or another person's work is mentioned.
+- `branch_from`: create a separate branch from existing work when the user explicitly asks to branch off or keep changes separate.
 
 ## Requirements
 
-- Linux or macOS
-- Stable OpenCode V1
+- OpenCode V1
 - Herdr 0.8 or newer
 - Git
-- Node.js 20 or newer to install dependencies and build the local plugin
+- Node.js 20 or newer for development
 
-On Omarchy, stable OpenCode is normally available as `opencode` and launched through `c`.
-
-## Omarchy Setup
-
-Install Herdr:
-
-```sh
-curl -fsSL https://herdr.dev/install.sh | sh
-```
-
-Install Herdr's OpenCode integration:
+Install Herdr's OpenCode integration separately so Herdr can report and restore agent state:
 
 ```sh
 herdr integration install opencode
 ```
 
-Clone this repository to a stable local path, install dependencies, and build it:
+## Install
+
+Clone, install, and build at a stable path:
 
 ```sh
-git clone <repository-url> ~/.local/share/opencode-herdr-dispatch
-cd ~/.local/share/opencode-herdr-dispatch
-npm install
+git clone https://github.com/swheel33/opencode-herdr-dispatch.git ~/Work/opencode-herdr-dispatch
+cd ~/Work/opencode-herdr-dispatch
+npm ci
 npm run build
 ```
 
-Add the built plugin to `~/.config/opencode/opencode.json`. Replace the example home directory with your absolute path; environment variables and `~` are not expanded inside a `file://` URL.
+Load the compiled plugin and deny its tool globally. Explicitly allow only the built-in Plan agent:
 
-```json
+```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "file:///home/YOUR_USER/.local/share/opencode-herdr-dispatch/dist/index.js"
-  ]
+    "file:///home/YOUR_USER/Work/opencode-herdr-dispatch/dist/index.js"
+  ],
+  "permission": {
+    "dispatch_to_herdr": "deny"
+  },
+  "agent": {
+    "plan": {
+      "permission": {
+        "dispatch_to_herdr": "allow"
+      }
+    }
+  }
 }
 ```
 
-Install the included Project Chat agent from the repository checkout:
-
-```sh
-mkdir -p ~/.config/opencode/agents
-cp agents/project-chat.md ~/.config/opencode/agents/project-chat.md
-```
-
-The safer helper refuses to overwrite a different existing file unless forced:
-
-```sh
-./scripts/install-agent.sh
-./scripts/install-agent.sh --force
-```
-
-Restart OpenCode after installing or changing the plugin or agent definition. OpenCode loads configuration only at startup.
-
-## Logging
-
-The plugin writes structured events through OpenCode's logger for each dispatch stage: request validation, repository resolution, worktree creation, agent startup, and plan delivery. Failures include the redacted dispatch error. Plan contents are never logged; only their character count is included.
-
-To see logs while running OpenCode directly:
-
-```sh
-opencode --print-logs
-```
-
-Set OpenCode's log level to `DEBUG` if you also want input-validation events:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "logLevel": "DEBUG"
-}
-```
+Install `commands/feature.md` as `~/.config/opencode/commands/feature.md`, then restart OpenCode. Configuration and plugins are loaded only at startup.
 
 ## Usage
 
-1. Start Herdr in the primary Git checkout.
-2. Run `c`.
-3. Select the `project-chat` primary agent.
-4. Discuss requirements and inspect the repository.
-5. Say "implement this."
-6. Project Chat sends its complete plan through `dispatch_to_herdr` exactly once.
-7. The implementation appears in the newly focused Herdr worktree workspace under a fresh OpenCode Build agent.
-
-`base` defaults to `HEAD`. Here, `HEAD` means the current commit in the primary planning checkout at dispatch time. The tool rejects bare repositories and linked-worktree checkouts; planning should happen in the primary checkout.
-
-## Dispatch Behavior
-
-The plugin runs these commands without shell interpolation:
+Run OpenCode Plan in a repository's primary checkout and describe the task naturally:
 
 ```text
-git check-ref-format --branch <branch>
-git rev-parse --show-toplevel
-git rev-parse --git-dir
-git rev-parse --git-common-dir
-git rev-parse --is-bare-repository
-herdr worktree create --cwd <repository-root> --branch <branch> --base <base> --focus
-herdr agent start <agent-name> --kind opencode --pane <pane-id> --timeout 60000 -- --agent build
-herdr agent prompt <agent-name> <plan>
+/feature add vault filtering
+/feature add tests to Alice's existing vault filtering branch
+/feature use Alice's vault filtering work as a base but keep my changes separate
 ```
 
-The generated agent name is unique, starts with a letter, uses only lowercase letters, digits, `_`, and `-`, and is at most 32 characters. Concurrent dispatches for the same canonical repository and branch are rejected within one plugin process.
+The command inspects the repository, resolves branch intent, creates a concise sidebar title, produces a complete plan, and invokes `dispatch_to_herdr` once. Ambiguous branch matches require clarification.
 
-Failures identify the executable, redacted argument list, termination status or signal, stdout, and stderr. The complete plan is redacted from prompt-command errors. A failed prompt is never retried automatically because duplicate implementation prompts are unsafe.
+The primary checkout must be clean by default because uncommitted files are not present in a new worktree. After explicit user confirmation, Plan may set `allowDirtyRoot` for an intentional override.
 
-## Lifecycle Limitations
+Remote sources are fetched before worktree creation. When the target branch already has a registered worktree, the plugin opens or focuses it instead of creating a duplicate checkout. Starting a fresh Build agent still requires the selected worktree's root pane to be an available shell.
 
-- The new OpenCode session receives only the generated plan; it does not inherit the planning transcript.
-- The root planning session remains open.
-- Worktree deletion is explicit through Herdr.
-- Herdr does not delete branches.
-- No worktree, branch, or partial dispatch cleanup happens automatically.
-- The plugin does not monitor merges, prune worktrees, target existing branches or PRs, or perform custom reset, pull, rebase, or push operations.
+## Worktree Lifecycle
+
+Herdr owns lifecycle UI; this project does not install a Herdr plugin and never removes worktrees automatically.
+
+Right-click a linked worktree in Herdr:
+
+- `Close` parks the Herdr space and retains the checkout.
+- `Delete worktree checkout...` safely removes the space and checkout, with a force confirmation for dirty or untracked files.
+
+Herdr retains the Git branch in both cases.
+
+## Commands
+
+The plugin uses argv spawning without shell interpolation. Depending on strategy and existing state, it runs a subset of:
+
+```text
+git status --porcelain --untracked-files=all
+git remote
+git fetch --no-tags <remote> <branch>
+git rev-parse --verify <source>^{commit}
+herdr worktree list --cwd <repository-root>
+herdr worktree create --cwd <root> --branch <branch> --base <base> --label <title> --focus
+herdr worktree open --cwd <root> --path <path> --label <title> --focus
+herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build
+herdr agent prompt <name> <plan>
+```
+
+Plan contents are redacted from command errors and logs. Failed prompts are never retried automatically, and partial dispatches are never cleaned up automatically.
 
 ## Development
 
 ```sh
-npm install
+npm ci
 npm run typecheck
-npm run build
+npm test
 ```
 
 ## License
