@@ -443,11 +443,8 @@ export class HerdrDispatcher {
           "--",
           "--agent",
           "build",
-          "--prompt",
-          validated.plan,
         ],
         cwd: repository.root,
-        redactArgs: [13],
         ...(signal ? { signal } : {}),
       }
       await this.startAgentWhenShellReady(startCommand)
@@ -456,6 +453,22 @@ export class HerdrDispatcher {
         agentName,
       })
 
+      this.log("info", "Delivering implementation plan", {
+        agentName,
+        planLength: validated.plan.length,
+      })
+      const promptCommand: CommandSpec = {
+        executable: "herdr",
+        args: ["agent", "prompt", agentName, validated.plan],
+        cwd: repository.root,
+        redactArgs: [3],
+        ...(signal ? { signal } : {}),
+      }
+      await runStage(
+        this.dependencies,
+        promptCommand,
+        "The workspace and agent exist, but plan delivery was not confirmed. Do not retry automatically.",
+      )
       this.log("info", "Implementation plan delivered", {
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
