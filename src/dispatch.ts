@@ -121,6 +121,54 @@ function herdrErrorCode(error: unknown): string | undefined {
   }
 }
 
+function stalledStateChangeSeq(error: unknown): number | undefined {
+  if (!(error instanceof CommandError)) return undefined
+
+  try {
+    const parsed = JSON.parse(error.result.stderr) as {
+      error?: { message?: unknown }
+    }
+    if (typeof parsed.error?.message !== "string") return undefined
+    const match = /state_change_seq remained (\d+)/u.exec(parsed.error.message)
+    return match ? Number(match[1]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface AgentState {
+  status: string
+  stateChangeSeq: number
+}
+
+function parseAgentState(stdout: string): AgentState {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (error) {
+    throw new DispatchError("Herdr agent inspection returned malformed JSON.", {
+      cause: error,
+    })
+  }
+
+  const agent = (parsed as {
+    result?: { agent?: { agent_status?: unknown; state_change_seq?: unknown } }
+  }).result?.agent
+  if (
+    typeof agent?.agent_status !== "string" ||
+    typeof agent.state_change_seq !== "number"
+  ) {
+    throw new DispatchError(
+      "Herdr agent inspection did not include result.agent.agent_status and result.agent.state_change_seq.",
+    )
+  }
+
+  return {
+    status: agent.agent_status,
+    stateChangeSeq: agent.state_change_seq,
+  }
+}
+
 function isEnvironmentFile(relativePath: string): boolean {
   const name = path.basename(relativePath)
   const excludedDirectories = new Set([
@@ -474,11 +522,7 @@ export class HerdrDispatcher {
         redactArgs: [3],
         ...(signal ? { signal } : {}),
       }
-      await runStage(
-        this.dependencies,
-        promptCommand,
-        "The workspace and agent exist, but OpenCode did not confirm plan admission. Inspect the existing agent before retrying; no cleanup was attempted.",
-      )
+      await this.deliverPlan(promptCommand, agentName)
       this.log("info", "Implementation plan admitted by OpenCode", {
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
@@ -611,6 +655,56 @@ export class HerdrDispatcher {
           ...(command.signal ? { signal: command.signal } : {}),
         })
       }
+    }
+  }
+
+  private async deliverPlan(command: CommandSpec, agentName: string): Promise<void> {
+    const failurePrefix =
+      "The workspace and agent exist, but OpenCode did not confirm plan admission. Inspect the existing agent before retrying; no cleanup was attempted."
+
+    try {
+      await this.dependencies.runner.run(command)
+      return
+    } catch (error) {
+      const stalledSeq = stalledStateChangeSeq(error)
+      if (herdrErrorCode(error) !== "agent_prompt_stalled" || stalledSeq === undefined) {
+        if (error instanceof CommandError || error instanceof DispatchError) {
+          throw new DispatchError(`${failurePrefix}\n${error.message}`, { cause: error })
+        }
+        throw error
+      }
+
+      const stateOutput = await runStage(
+        this.dependencies,
+        {
+          executable: "herdr",
+          args: ["agent", "get", agentName],
+          cwd: command.cwd,
+          ...(command.signal ? { signal: command.signal } : {}),
+        },
+        `${failurePrefix}\nThe stalled agent could not be inspected safely.`,
+      )
+      const state = parseAgentState(stateOutput)
+      if (state.status === "working") {
+        this.log("info", "Implementation plan admitted after Herdr stall response", {
+          agentName,
+          stateChangeSeq: state.stateChangeSeq,
+        })
+        return
+      }
+
+      if (state.status !== "idle" || state.stateChangeSeq !== stalledSeq) {
+        throw new DispatchError(
+          `${failurePrefix}\nHerdr reported ${JSON.stringify(state.status)} at state_change_seq ${state.stateChangeSeq} after the stalled submission; the plan was not retried.`,
+          { cause: error },
+        )
+      }
+
+      this.log("info", "Retrying stalled implementation plan delivery once", {
+        agentName,
+        stateChangeSeq: state.stateChangeSeq,
+      })
+      await runStage(this.dependencies, command, failurePrefix)
     }
   }
 

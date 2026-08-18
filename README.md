@@ -102,7 +102,7 @@ herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agen
 herdr agent prompt <name> <plan> --wait --until working --timeout 60000
 ```
 
-Plan contents are redacted from command errors and logs. Prompt delivery succeeds only after the OpenCode integration reports that the newly submitted message is being processed. A timeout or stalled prompt returns an explicit error while preserving the worktree, pane, and agent for inspection. Failed prompts are never retried automatically, and partial dispatches are never cleaned up automatically.
+Plan contents are redacted from command errors and logs. Prompt delivery succeeds only after the OpenCode integration reports that the newly submitted message is being processed. If Herdr reports a stalled prompt, the plugin inspects the agent and retries delivery once only when it is still idle at the unchanged state sequence; all other timeout or stalled states return an explicit error. The worktree, pane, and agent are preserved after failures, and partial dispatches are never cleaned up automatically.
 
 ## Development
 
