@@ -459,7 +459,17 @@ export class HerdrDispatcher {
       })
       const promptCommand: CommandSpec = {
         executable: "herdr",
-        args: ["agent", "prompt", agentName, validated.plan],
+        args: [
+          "agent",
+          "prompt",
+          agentName,
+          validated.plan,
+          "--wait",
+          "--until",
+          "working",
+          "--timeout",
+          "60000",
+        ],
         cwd: repository.root,
         redactArgs: [3],
         ...(signal ? { signal } : {}),
@@ -467,9 +477,9 @@ export class HerdrDispatcher {
       await runStage(
         this.dependencies,
         promptCommand,
-        "The workspace and agent exist, but plan delivery was not confirmed. Do not retry automatically.",
+        "The workspace and agent exist, but OpenCode did not confirm plan admission. Inspect the existing agent before retrying; no cleanup was attempted.",
       )
-      this.log("info", "Implementation plan delivered", {
+      this.log("info", "Implementation plan admitted by OpenCode", {
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
         agentName,
