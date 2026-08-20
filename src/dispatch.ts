@@ -9,6 +9,7 @@ import type {
   CommandSpec,
   DispatchDependencies,
   DispatchInput,
+  DispatchPartialState,
   DispatchResult,
   WorktreeInfo,
 } from "./types.js"
@@ -338,6 +339,7 @@ export class HerdrDispatcher {
     }
 
     inFlight.add(key)
+    const partial: DispatchPartialState = {}
     try {
       const existingWorktree = await this.findExistingWorktree(
         repository.root,
@@ -417,6 +419,9 @@ export class HerdrDispatcher {
         paneId: worktree.paneId,
         ...(worktree.path ? { worktreePath: worktree.path } : {}),
       })
+      partial.workspaceId = worktree.workspaceId
+      partial.paneId = worktree.paneId
+      if (worktree.path) partial.path = worktree.path
       if (!worktree.path) {
         throw new DispatchError(
           "Herdr did not report the worktree path required for environment linking and pane setup.",
@@ -471,6 +476,7 @@ export class HerdrDispatcher {
       const agentName = (this.dependencies.createAgentName ?? createAgentName)(
         validated.branch,
       )
+      partial.agentName = agentName
       this.log("info", "Starting OpenCode Build agent", {
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
@@ -543,6 +549,14 @@ export class HerdrDispatcher {
         ...(worktree.path ? { path: worktree.path } : {}),
         ...(worktree.branch ? { worktreeBranch: worktree.branch } : {}),
       }
+    } catch (error) {
+      if (Object.keys(partial).length > 0) {
+        throw new DispatchError(
+          error instanceof Error ? error.message : String(error),
+          { cause: error, partial },
+        )
+      }
+      throw error
     } finally {
       inFlight.delete(key)
     }

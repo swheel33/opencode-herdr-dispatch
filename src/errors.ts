@@ -1,4 +1,5 @@
 import type { CommandResult, CommandSpec } from "./types.js"
+import type { DispatchPartialState } from "./types.js"
 
 const OUTPUT_LIMIT = 4_000
 
@@ -32,9 +33,15 @@ export function formatCommandFailure(
 }
 
 export class DispatchError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+  readonly partial: DispatchPartialState | undefined
+
+  constructor(
+    message: string,
+    options?: ErrorOptions & { partial?: DispatchPartialState },
+  ) {
     super(message, options)
     this.name = "DispatchError"
+    this.partial = options?.partial
   }
 }
 

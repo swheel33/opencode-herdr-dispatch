@@ -1,8 +1,8 @@
 # opencode-herdr-dispatch
 
-An OpenCode plugin that turns an approved implementation plan into a background Herdr feature workspace. It creates or reopens a Git worktree, links local environment files, prepares a 70/30 agent and shell layout, starts an OpenCode Build agent, and delivers a self-contained handoff.
+An OpenCode plugin that turns implementation ideas discussed in a thread into independent background Herdr feature workspaces. It creates or reopens Git worktrees, links local environment files, prepares 70/30 agent and shell layouts, starts OpenCode Build agents, and delivers self-contained handoffs.
 
-The user-facing workflow is the included `/feature` command. It interprets natural language with OpenCode Plan, then calls the plugin with one deterministic strategy:
+The plugin registers a `/feature` command and an isolated `herdr-feature-coordinator` subagent. The coordinator reads bounded conversational context since the previous `/feature`, identifies one or more independent implementation features, and asks the user to confirm a multi-select list. Every selected feature uses one deterministic Git strategy:
 
 - `new`: create a new branch from `HEAD` or an explicit base.
 - `continue`: fetch and continue an existing local or remote branch. This is the default when an existing branch, PR, or another person's work is mentioned.
@@ -32,44 +32,36 @@ npm ci
 npm run build
 ```
 
-Load the compiled plugin and deny its tool globally. Explicitly allow only the built-in Plan agent:
+Load the compiled plugin:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "file:///home/YOUR_USER/Work/opencode-herdr-dispatch/dist/index.js"
-  ],
-  "permission": {
-    "dispatch_to_herdr": "deny"
-  },
-  "agent": {
-    "plan": {
-      "permission": {
-        "dispatch_to_herdr": "allow"
-      }
-    }
-  }
+  ]
 }
 ```
 
-Install `commands/feature.md` as `~/.config/opencode/commands/feature.md`, then restart OpenCode. Configuration and plugins are loaded only at startup.
+Restart OpenCode after installation. The plugin registers the command, coordinator, and least-privilege dispatch permissions at startup. Existing installations may remove the old copied `~/.config/opencode/commands/feature.md` and the obsolete Plan-agent permission override; the plugin replaces the shipped legacy command in memory either way.
 
 ## Usage
 
-Run OpenCode Plan in a repository's primary checkout and describe the task naturally:
+Run OpenCode in a repository's primary checkout. Discuss one or more implementation ideas, then invoke `/feature`:
 
 ```text
-/feature add vault filtering
-/feature add tests to Alice's existing vault filtering branch
-/feature use Alice's vault filtering work as a base but keep my changes separate
+/feature
+/feature only the architecture proposals
+/feature include tests on Alice's existing vault filtering branch
 ```
 
-The command inspects the repository, resolves branch intent, creates a concise sidebar title, produces a complete plan, and invokes `dispatch_to_herdr` once. Ambiguous branch matches require clarification.
+The coordinator inspects the repository, resolves branch intent, creates concise sidebar titles, and produces complete independent plans. It always asks for final selection confirmation, including when it detects only one feature. One batch call then starts up to three selected dispatches concurrently. A batch accepts at most eight features, rejects duplicate target branches before dispatch, and reports each result independently.
 
-The primary checkout must be clean by default because uncommitted files are not present in a new worktree. After explicit user confirmation, Plan may set `allowDirtyRoot` for an intentional override.
+The first `/feature` in a thread receives its visible user and assistant discussion. Later invocations receive discussion since the previous `/feature`, preventing old features and injected child prompts from recursively contaminating new work. Reasoning and tool output are excluded, and context is bounded. Use command arguments to explicitly bring back an older or cancelled proposal.
 
-Remote sources are fetched before worktree creation. When the target branch already has a registered worktree, the plugin opens it instead of creating a duplicate checkout. Starting a fresh Build agent still requires the selected worktree's root pane to be an available shell.
+The primary checkout must be clean by default because uncommitted files are not present in a new worktree. After explicit user confirmation, the coordinator may set `allowDirtyRoot` for an intentional override.
+
+Remote sources are fetched before worktree creation. When a target branch already has a registered worktree, the plugin opens it instead of creating a duplicate checkout. Starting a fresh Build agent still requires the selected worktree's root pane to be an available shell. Batch execution is not transactional: successful and partially created workspaces remain available when another selected feature fails.
 
 Feature workspaces are created without changing the user's focus. New single-pane workspaces are split 70/30 with the Build agent in the top pane and an interactive shell in the bottom pane. Ignored `.env` and `.env.*` files from the primary checkout are symlinked into matching worktree paths; tracked examples are left untouched and existing destination files are never overwritten. Agent startup tolerates the short interval between pane creation and shell readiness.
 
