@@ -2,7 +2,7 @@
 
 An OpenCode plugin that turns implementation ideas discussed in a thread into independent background Herdr feature workspaces. It creates or reopens Git worktrees, links local environment files, prepares 70/30 agent and shell layouts, starts OpenCode Build agents, and delivers self-contained handoffs.
 
-The plugin registers a `/feature` command and an isolated `herdr-feature-coordinator` subagent. The coordinator reads bounded conversational context since the previous `/feature`, identifies one or more independent implementation features, and asks the user to confirm a multi-select list. Every selected feature uses one deterministic Git strategy:
+The plugin registers a `/feature` command and an isolated hidden `herdr-feature-coordinator` subagent. The coordinator reads bounded conversational context since the previous `/feature` and identifies one or more independent implementation features. A single clear feature dispatches immediately; multiple features require confirmation through a multi-select list. Every selected feature uses one deterministic Git strategy:
 
 - `new`: create a new branch from `HEAD` or an explicit base.
 - `continue`: fetch and continue an existing local or remote branch. This is the default when an existing branch, PR, or another person's work is mentioned.
@@ -55,7 +55,7 @@ Run OpenCode in a repository's primary checkout. Discuss one or more implementat
 /feature include tests on Alice's existing vault filtering branch
 ```
 
-The coordinator inspects the repository, resolves branch intent, creates concise sidebar titles, and produces complete independent plans. It always asks for final selection confirmation, including when it detects only one feature. One batch call then starts up to three selected dispatches concurrently. A batch accepts at most eight features, rejects duplicate target branches before dispatch, and reports each result independently.
+The coordinator inspects the repository, resolves branch intent, creates concise sidebar titles, and produces complete independent plans. One clear feature dispatches without implementation confirmation. Multiple features are presented for multi-select confirmation. Ambiguity and dirty-checkout overrides still require approval. One batch call then starts up to three selected dispatches concurrently. A batch accepts at most eight features, rejects duplicate target branches before dispatch, and reports each result independently.
 
 The first `/feature` in a thread receives its visible user and assistant discussion. Later invocations receive discussion since the previous `/feature`, preventing old features and injected child prompts from recursively contaminating new work. Reasoning and tool output are excluded, and context is bounded. Use command arguments to explicitly bring back an older or cancelled proposal.
 

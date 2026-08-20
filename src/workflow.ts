@@ -13,9 +13,9 @@ Use the feature command request and the supplied parent-thread context to identi
 
 Combine tightly coupled changes into one feature. Split work only when every feature can have its own branch, self-contained plan, acceptance criteria, and tests without depending on another feature in the same batch.
 
-Before dispatching, present every detected feature in one question with multiple selection enabled and custom answers disabled. Ask for confirmation even when there is only one feature. Use labels prefixed F1, F2, and so on. If the request, behavior, or Git intent is ambiguous, clarify it before the final selection question.
+When exactly one clear feature is detected, dispatch it without asking for implementation confirmation. When multiple features are detected, present them in one question with multiple selection enabled and custom answers disabled, using labels prefixed F1, F2, and so on. If the request, behavior, or Git intent is ambiguous, clarify it before dispatch. Dirty-checkout approval is still required before setting allowDirtyRoot.
 
-After confirmation, call dispatch_features_to_herdr exactly once with only the selected features. Never call dispatch_to_herdr. Report every success and failure. Do not retry a failed or unclear dispatch.`
+Call dispatch_features_to_herdr exactly once with the single clear feature or the confirmed multi-feature selection. Never call dispatch_to_herdr. Report every success and failure. Do not retry a failed or unclear dispatch.`
 
 export const FEATURE_COMMAND_TEMPLATE = `Treat this command as a request to select and dispatch all distinct implementation features agreed in the relevant parent-thread discussion.
 
@@ -37,7 +37,7 @@ For each independently implementable feature:
 - Resolve remote branch names from repository state and clarify ambiguous matches.
 - Explain dirty-checkout behavior and obtain explicit confirmation before setting allowDirtyRoot.
 
-Present the final detected list in one multi-select question before performing any dispatch.`
+If there are multiple detected features, present the final list in one multi-select question before dispatch. If there is exactly one clear feature, dispatch it immediately unless clarification or dirty-checkout approval is required.`
 
 type MessageWithParts = {
   info: Message
@@ -150,8 +150,9 @@ export function configureFeatureWorkflow(config: Config): void {
     ...existingAgent,
     description:
       existingAgent.description ??
-      "Finds independent implementation features, confirms selection, and dispatches them to Herdr.",
+      "Finds independent implementation features and dispatches them to Herdr.",
     mode: "subagent",
+    hidden: true,
     prompt: FEATURE_COORDINATOR_PROMPT,
     permission: {
       ...(existingAgent.permission ?? {}),

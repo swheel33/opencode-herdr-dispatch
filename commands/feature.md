@@ -10,6 +10,6 @@ The command arguments are an optional filter or clarification: `$ARGUMENTS`.
 
 The plugin supplies bounded parent-thread context. Identify independently implementable features, inspect the repository, and prepare a complete plan, title, branch, and Git intent for each one. Combine tightly coupled changes rather than creating dependent features in the same batch.
 
-Present every detected feature in one multi-select question, even when there is only one. Dispatch only the confirmed selection by calling `dispatch_features_to_herdr` exactly once. Do not call `dispatch_to_herdr`, create worktrees through Bash, or retry an unclear or failed result.
+When exactly one clear feature is detected, dispatch it immediately without implementation confirmation. When multiple features are detected, present them in one multi-select question and dispatch only the confirmed selection. Clarification and dirty-checkout approval are still required when applicable. Call `dispatch_features_to_herdr` exactly once. Do not call `dispatch_to_herdr`, create worktrees through Bash, or retry an unclear or failed result.
 
 Report every selected feature's branch, workspace, pane, worktree, agent, and failure state.
