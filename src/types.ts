@@ -57,8 +57,10 @@ export interface DispatchResult extends WorktreeInfo {
   title: string
   branch: string
   base: string
+  baseCommit: string
   source?: string
   reusedWorktree: boolean
+  shellPaneId: string
   agentName: string
   planDelivered: true
   worktreeBranch?: string
@@ -84,6 +86,7 @@ export type BatchFeatureResult =
 export interface DispatchPartialState {
   workspaceId?: string
   paneId?: string
+  shellPaneId?: string
   path?: string
   agentName?: string
 }

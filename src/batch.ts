@@ -168,6 +168,7 @@ export function formatBatchDispatchResult(result: BatchDispatchResult): string {
         `Mode: ${feature.result.mode}`,
         `Branch: ${feature.result.branch}`,
         `Base: ${feature.result.base}`,
+        `Base commit: ${feature.result.baseCommit}`,
         `Workspace ID: ${feature.result.workspaceId}`,
         `Pane ID: ${feature.result.paneId}`,
         `Agent: ${feature.result.agentName}`,

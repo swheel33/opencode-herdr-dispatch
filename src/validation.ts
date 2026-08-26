@@ -16,7 +16,7 @@ export interface ValidatedDispatchInput {
   title: string
   branch: string
   plan: string
-  base: string
+  base?: string
   source?: string
   allowDirtyRoot: boolean
 }
@@ -124,7 +124,7 @@ export async function validateDispatchInput(
   const title = input.title.trim()
   const branch = input.branch.trim()
   const plan = input.plan.trim()
-  const base = input.base?.trim() || "HEAD"
+  const base = input.base?.trim()
   const source = input.source?.trim()
 
   if (!title) throw new DispatchError("Feature title must not be empty.")
@@ -144,7 +144,7 @@ export async function validateDispatchInput(
     title,
     branch,
     plan,
-    base,
+    ...(base ? { base } : {}),
     ...(source ? { source } : {}),
     allowDirtyRoot: input.allowDirtyRoot ?? false,
   }

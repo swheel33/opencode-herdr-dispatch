@@ -28,7 +28,9 @@ const dispatchFeatureSchema = {
   branch: tool.schema.string().describe("Local Git branch for this feature"),
   plan: tool.schema
     .string()
-    .describe("Complete, self-contained implementation plan for this feature only"),
+    .describe(
+      "Reused implementation-ready plan or the smallest sufficient handoff for this feature only",
+    ),
   source: tool.schema
     .string()
     .optional()
@@ -36,7 +38,9 @@ const dispatchFeatureSchema = {
   base: tool.schema
     .string()
     .optional()
-    .describe("Git base ref for a new feature; defaults to HEAD"),
+    .describe(
+      "Explicit Git base ref for a new feature; when omitted, freshly fetches and pins origin's default branch",
+    ),
 }
 
 const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
@@ -146,7 +150,7 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
       }),
       dispatch_features_to_herdr: tool({
         description:
-          "Dispatch one confirmed selection of independent implementation features to separate Herdr worktrees and OpenCode Build agents. The /feature coordinator calls this exactly once after the user confirms the list.",
+          "Dispatch one clear feature or one confirmed selection of independent features to separate Herdr worktrees and OpenCode Build agents. The /feature coordinator calls this exactly once.",
         args: {
           features: tool.schema
             .array(tool.schema.object(dispatchFeatureSchema))

@@ -11,6 +11,7 @@ import type {
   DispatchInput,
   DispatchPartialState,
   DispatchResult,
+  RepositoryInfo,
   WorktreeInfo,
 } from "./types.js"
 import {
@@ -20,6 +21,7 @@ import {
 } from "./validation.js"
 
 const inFlight = new Set<string>()
+const fetchLocks = new Map<string, Promise<void>>()
 const SHELL_READY_RETRY_MS = 100
 const SHELL_READY_TIMEOUT_MS = 5_000
 
@@ -90,7 +92,24 @@ export function parseWorktreeResult(stdout: string): WorktreeInfo {
   }
 }
 
-function parsePaneCount(stdout: string): number {
+interface PaneRect {
+  height: number
+  width: number
+  x: number
+  y: number
+}
+
+interface PaneLayoutEntry {
+  paneId: string
+  rect: PaneRect
+}
+
+interface PaneLayout {
+  panes: PaneLayoutEntry[]
+  splits: Array<{ direction: string; ratio: number }>
+}
+
+function parsePaneLayout(stdout: string): PaneLayout {
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
@@ -100,13 +119,76 @@ function parsePaneCount(stdout: string): number {
     })
   }
 
-  const panes = (parsed as { result?: { layout?: { panes?: unknown } } }).result
-    ?.layout?.panes
-  if (!Array.isArray(panes)) {
-    throw new DispatchError("Herdr pane layout did not include result.layout.panes.")
+  const layout = (parsed as {
+    result?: { layout?: { panes?: unknown; splits?: unknown } }
+  }).result?.layout
+  if (!Array.isArray(layout?.panes) || !Array.isArray(layout.splits)) {
+    throw new DispatchError(
+      "Herdr pane layout did not include result.layout.panes and result.layout.splits.",
+    )
   }
 
-  return panes.length
+  const panes = layout.panes.map((entry): PaneLayoutEntry => {
+    const pane = entry as { pane_id?: unknown; rect?: Record<string, unknown> }
+    const rect = pane.rect
+    if (
+      typeof pane.pane_id !== "string" ||
+      typeof rect?.height !== "number" ||
+      typeof rect.width !== "number" ||
+      typeof rect.x !== "number" ||
+      typeof rect.y !== "number"
+    ) {
+      throw new DispatchError("Herdr pane layout included a malformed pane entry.")
+    }
+    return {
+      paneId: pane.pane_id,
+      rect: {
+        height: rect.height,
+        width: rect.width,
+        x: rect.x,
+        y: rect.y,
+      },
+    }
+  })
+  const splits = layout.splits.map((entry) => {
+    const split = entry as { direction?: unknown; ratio?: unknown }
+    if (typeof split.direction !== "string" || typeof split.ratio !== "number") {
+      throw new DispatchError("Herdr pane layout included a malformed split entry.")
+    }
+    return { direction: split.direction, ratio: split.ratio }
+  })
+  return { panes, splits }
+}
+
+function parseSplitPaneId(stdout: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (error) {
+    throw new DispatchError("Herdr pane split returned malformed JSON.", { cause: error })
+  }
+  const paneId = (parsed as { result?: { pane?: { pane_id?: unknown } } }).result
+    ?.pane?.pane_id
+  if (typeof paneId !== "string") {
+    throw new DispatchError("Herdr pane split did not include result.pane.pane_id.")
+  }
+  return paneId
+}
+
+function expectedShellPane(layout: PaneLayout, agentPaneId: string): string | undefined {
+  if (layout.panes.length !== 2 || layout.splits.length !== 1) return undefined
+  const agent = layout.panes.find((pane) => pane.paneId === agentPaneId)
+  const shell = layout.panes.find((pane) => pane.paneId !== agentPaneId)
+  const split = layout.splits[0]
+  if (!agent || !shell || !split) return undefined
+  const isTopBottom =
+    split.direction === "down" &&
+    Math.abs(split.ratio - 0.7) <= 0.02 &&
+    agent.rect.x === shell.rect.x &&
+    agent.rect.width === shell.rect.width &&
+    agent.rect.y < shell.rect.y &&
+    agent.rect.y + agent.rect.height === shell.rect.y
+  return isTopBottom ? shell.paneId : undefined
 }
 
 function herdrErrorCode(error: unknown): string | undefined {
@@ -200,6 +282,7 @@ export interface ExistingWorktreeInfo {
   path: string
   branch?: string
   openWorkspaceId?: string
+  isLinkedWorktree?: boolean
 }
 
 export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] {
@@ -225,8 +308,39 @@ export function parseWorktreeListResult(stdout: string): ExistingWorktreeInfo[] 
       ...(typeof value.open_workspace_id === "string"
         ? { openWorkspaceId: value.open_workspace_id }
         : {}),
+      ...(typeof value.is_linked_worktree === "boolean"
+        ? { isLinkedWorktree: value.is_linked_worktree }
+        : {}),
     }]
   })
+}
+
+interface ResolvedBase {
+  label: string
+  commit: string
+}
+
+interface RootState {
+  branch: string
+  commit: string
+  status: string
+}
+
+async function withFetchLock<T>(repositoryRoot: string, action: () => Promise<T>): Promise<T> {
+  const previous = fetchLocks.get(repositoryRoot) ?? Promise.resolve()
+  let release = (): void => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const queued = previous.then(() => gate)
+  fetchLocks.set(repositoryRoot, queued)
+  await previous
+  try {
+    return await action()
+  } finally {
+    release()
+    if (fetchLocks.get(repositoryRoot) === queued) fetchLocks.delete(repositoryRoot)
+  }
 }
 
 async function runStage(
@@ -283,7 +397,7 @@ export class HerdrDispatcher {
       mode: input.mode,
       title: input.title,
       branch: input.branch,
-      base: input.base ?? "HEAD",
+      base: input.base ?? "fresh origin default",
       ...(input.source ? { source: input.source } : {}),
       planLength: input.plan.length,
     })
@@ -330,7 +444,6 @@ export class HerdrDispatcher {
       gitDir: repository.gitDir,
     })
     await this.assertPrimaryCheckoutSafe(repository.root, validated, signal)
-    const base = await this.resolveBase(repository.root, validated, signal)
     const key = `${repository.root}\0${validated.branch}`
     if (inFlight.has(key)) {
       throw new DispatchError(
@@ -341,11 +454,18 @@ export class HerdrDispatcher {
     inFlight.add(key)
     const partial: DispatchPartialState = {}
     try {
+      const rootState = await this.readRootState(repository.root, signal)
+      const base = await this.resolveBase(repository.root, validated, signal)
       const existingWorktree = await this.findExistingWorktree(
         repository.root,
         validated.branch,
         signal,
       )
+      if (existingWorktree && validated.mode !== "continue") {
+        throw new DispatchError(
+          `Branch ${JSON.stringify(validated.branch)} already has a worktree. Use continue intent or choose a new branch.`,
+        )
+      }
       if (validated.mode !== "continue" && !existingWorktree) {
         const branchExists = await commandSucceeds(this.dependencies, {
           executable: "git",
@@ -364,7 +484,8 @@ export class HerdrDispatcher {
         repository: repository.root,
         mode: validated.mode,
         branch: validated.branch,
-        base,
+        base: base.label,
+        baseCommit: base.commit,
         ...(existingWorktree ? { worktreePath: existingWorktree.path } : {}),
       })
       const worktreeCommand: CommandSpec = {
@@ -389,7 +510,7 @@ export class HerdrDispatcher {
               "--branch",
               validated.branch,
               "--base",
-              base,
+              base.commit,
               "--label",
               validated.title,
               "--no-focus",
@@ -427,6 +548,14 @@ export class HerdrDispatcher {
           "Herdr did not report the worktree path required for environment linking and pane setup.",
         )
       }
+      await this.assertLinkedWorktree(
+        repository,
+        worktree.path,
+        validated.branch,
+        existingWorktree ? undefined : base.commit,
+        signal,
+      )
+      await this.assertRootStateUnchanged(repository.root, rootState, signal)
 
       const linkedEnvironmentFiles = await this.linkEnvironmentFiles(
         repository.root,
@@ -438,7 +567,7 @@ export class HerdrDispatcher {
         linkedEnvironmentFiles,
       })
 
-      const layoutOutput = await runStage(
+      let layout = parsePaneLayout(await runStage(
         this.dependencies,
         {
           executable: "herdr",
@@ -447,9 +576,10 @@ export class HerdrDispatcher {
           ...(signal ? { signal } : {}),
         },
         "Could not inspect the Herdr worktree pane layout.",
-      )
-      if (parsePaneCount(layoutOutput) === 1) {
-        await runStage(
+      ))
+      let shellPaneId: string
+      if (layout.panes.length === 1 && layout.panes[0]?.paneId === worktree.paneId) {
+        const splitOutput = await runStage(
           this.dependencies,
           {
             executable: "herdr",
@@ -471,7 +601,32 @@ export class HerdrDispatcher {
           },
           "Could not create the 70/30 Herdr worktree pane layout.",
         )
+        shellPaneId = parseSplitPaneId(splitOutput)
+        layout = parsePaneLayout(await runStage(
+          this.dependencies,
+          {
+            executable: "herdr",
+            args: ["pane", "layout", "--pane", worktree.paneId],
+            cwd: repository.root,
+            ...(signal ? { signal } : {}),
+          },
+          "Could not verify the new Herdr worktree pane layout.",
+        ))
+        if (expectedShellPane(layout, worktree.paneId) !== shellPaneId) {
+          throw new DispatchError(
+            "Herdr did not create the expected agent-top 70% and shell-bottom 30% pane layout.",
+          )
+        }
+      } else {
+        const existingShellPaneId = expectedShellPane(layout, worktree.paneId)
+        if (!existingShellPaneId) {
+          throw new DispatchError(
+            "The Herdr worktree layout is not dispatch-compatible. Expected the root agent pane on top at 70% and one shell pane below at 30%.",
+          )
+        }
+        shellPaneId = existingShellPaneId
       }
+      partial.shellPaneId = shellPaneId
 
       const agentName = (this.dependencies.createAgentName ?? createAgentName)(
         validated.branch,
@@ -539,11 +694,13 @@ export class HerdrDispatcher {
         mode: validated.mode,
         title: validated.title,
         branch: validated.branch,
-        base,
+        base: base.label,
+        baseCommit: base.commit,
         ...(validated.source ? { source: validated.source } : {}),
         reusedWorktree: existingWorktree !== undefined,
         workspaceId: worktree.workspaceId,
         paneId: worktree.paneId,
+        shellPaneId,
         agentName,
         planDelivered: true,
         ...(worktree.path ? { path: worktree.path } : {}),
@@ -580,6 +737,104 @@ export class HerdrDispatcher {
     if (status.trim() && !input.allowDirtyRoot) {
       throw new DispatchError(
         "The primary checkout has uncommitted files that will not be included in the feature worktree. Confirm this explicitly and dispatch with allowDirtyRoot only if that is intentional.",
+      )
+    }
+  }
+
+  private async readRootState(
+    repositoryRoot: string,
+    signal?: AbortSignal,
+  ): Promise<RootState> {
+    const command = (args: readonly string[], failure: string) =>
+      runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args,
+          cwd: repositoryRoot,
+          ...(signal ? { signal } : {}),
+        },
+        failure,
+      )
+    const [branch, commit, status] = await Promise.all([
+      command(["rev-parse", "--abbrev-ref", "HEAD"], "Could not read the root branch."),
+      command(["rev-parse", "--verify", "HEAD"], "Could not read the root commit."),
+      command(
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        "Could not read the root status.",
+      ),
+    ])
+    return { branch: branch.trim(), commit: commit.trim(), status }
+  }
+
+  private async assertRootStateUnchanged(
+    repositoryRoot: string,
+    expected: RootState,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const actual = await this.readRootState(repositoryRoot, signal)
+    if (
+      actual.branch !== expected.branch ||
+      actual.commit !== expected.commit ||
+      actual.status !== expected.status
+    ) {
+      throw new DispatchError(
+        "The primary checkout changed during dispatch. No agent was started and the plugin did not reset or repair it.",
+      )
+    }
+  }
+
+  private async assertLinkedWorktree(
+    repository: RepositoryInfo,
+    worktreePath: string,
+    expectedBranch: string,
+    expectedCommit: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const canonicalPath = await this.dependencies.realpath(worktreePath)
+    if (canonicalPath === repository.root) {
+      throw new DispatchError(
+        "Herdr returned the primary checkout as the dispatch target. No agent was started.",
+      )
+    }
+    const output = (args: readonly string[], failure: string) =>
+      runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args,
+          cwd: canonicalPath,
+          ...(signal ? { signal } : {}),
+        },
+        failure,
+      )
+    const [rootOutput, gitDirOutput, commonDirOutput, branchOutput, commitOutput] =
+      await Promise.all([
+        output(["rev-parse", "--show-toplevel"], "Could not verify the worktree root."),
+        output(["rev-parse", "--git-dir"], "Could not verify the worktree Git directory."),
+        output(
+          ["rev-parse", "--git-common-dir"],
+          "Could not verify the worktree common Git directory.",
+        ),
+        output(["rev-parse", "--abbrev-ref", "HEAD"], "Could not verify the worktree branch."),
+        output(["rev-parse", "--verify", "HEAD"], "Could not verify the worktree commit."),
+      ])
+    const worktreeRoot = await this.dependencies.realpath(rootOutput.trim())
+    const gitDir = await this.dependencies.realpath(
+      path.resolve(canonicalPath, gitDirOutput.trim()),
+    )
+    const commonDir = await this.dependencies.realpath(
+      path.resolve(canonicalPath, commonDirOutput.trim()),
+    )
+    if (
+      worktreeRoot !== canonicalPath ||
+      commonDir !== repository.commonDir ||
+      gitDir === commonDir ||
+      branchOutput.trim() !== expectedBranch ||
+      (expectedCommit !== undefined && commitOutput.trim() !== expectedCommit)
+    ) {
+      throw new DispatchError(
+        "Herdr returned a checkout that does not match the requested linked worktree, branch, and base commit. No agent was started.",
       )
     }
   }
@@ -726,9 +981,40 @@ export class HerdrDispatcher {
     repositoryRoot: string,
     input: ValidatedDispatchInput,
     signal?: AbortSignal,
-  ): Promise<string> {
-    if (!input.source) return input.base
+  ): Promise<ResolvedBase> {
+    return withFetchLock(repositoryRoot, async () => {
+      if (input.source) {
+        return this.resolveBaseRef(repositoryRoot, input.source, signal)
+      }
+      if (input.base) {
+        return this.resolveBaseRef(repositoryRoot, input.base, signal)
+      }
 
+      const remoteHead = await runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args: ["ls-remote", "--symref", "origin", "HEAD"],
+          cwd: repositoryRoot,
+          ...(signal ? { signal } : {}),
+        },
+        "Could not resolve origin's default branch. Add a working origin remote or explicitly request a local base such as HEAD.",
+      )
+      const match = /^ref:\s+refs\/heads\/(\S+)\s+HEAD$/mu.exec(remoteHead)
+      if (!match?.[1]) {
+        throw new DispatchError(
+          "Origin did not advertise a default branch. Specify an explicit base or repair origin's HEAD.",
+        )
+      }
+      return this.fetchRemoteBranch(repositoryRoot, "origin", match[1], signal)
+    })
+  }
+
+  private async resolveBaseRef(
+    repositoryRoot: string,
+    ref: string,
+    signal?: AbortSignal,
+  ): Promise<ResolvedBase> {
     const remotesOutput = await runStage(
       this.dependencies,
       {
@@ -743,45 +1029,92 @@ export class HerdrDispatcher {
       .split(/\r?\n/u)
       .filter(Boolean)
       .sort((left, right) => right.length - left.length)
-      .find((candidate) => input.source?.startsWith(`${candidate}/`))
-
+      .find((candidate) => ref.startsWith(`${candidate}/`))
     if (remote) {
-      const remoteBranch = input.source.slice(remote.length + 1)
-      if (!remoteBranch) throw new DispatchError("Remote source branch must not be empty.")
-      await runStage(
-        this.dependencies,
-        {
-          executable: "git",
-          args: ["fetch", "--no-tags", remote, remoteBranch],
-          cwd: repositoryRoot,
-          ...(signal ? { signal } : {}),
-        },
-        `Could not fetch source branch ${JSON.stringify(input.source)}.`,
-      )
-      await runStage(
-        this.dependencies,
-        {
-          executable: "git",
-          args: ["rev-parse", "--verify", `${input.source}^{commit}`],
-          cwd: repositoryRoot,
-          ...(signal ? { signal } : {}),
-        },
-        `Fetched source branch ${JSON.stringify(input.source)} could not be resolved.`,
-      )
-      return input.source
+      const branch = ref.slice(remote.length + 1)
+      if (!branch) throw new DispatchError("Remote branch must not be empty.")
+      return this.fetchRemoteBranch(repositoryRoot, remote, branch, signal)
     }
 
+    const commit = (await runStage(
+      this.dependencies,
+      {
+        executable: "git",
+        args: ["rev-parse", "--verify", `${ref}^{commit}`],
+        cwd: repositoryRoot,
+        ...(signal ? { signal } : {}),
+      },
+      `Git base ${JSON.stringify(ref)} could not be resolved.`,
+    )).trim()
+    return { label: ref, commit }
+  }
+
+  private async fetchRemoteBranch(
+    repositoryRoot: string,
+    remote: string,
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<ResolvedBase> {
     await runStage(
       this.dependencies,
       {
         executable: "git",
-        args: ["rev-parse", "--verify", `${input.source}^{commit}`],
+        args: ["check-ref-format", "--branch", branch],
         cwd: repositoryRoot,
         ...(signal ? { signal } : {}),
       },
-      `Source branch ${JSON.stringify(input.source)} could not be resolved.`,
+      `Remote branch ${JSON.stringify(`${remote}/${branch}`)} is invalid.`,
     )
-    return input.source
+    const trackingRef = `refs/remotes/${remote}/${branch}`
+    const temporaryRef = `refs/opencode-herdr-dispatch/${randomUUID()}`
+    try {
+      await runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args: [
+            "fetch",
+            "--no-tags",
+            remote,
+            `+refs/heads/${branch}:${temporaryRef}`,
+          ],
+          cwd: repositoryRoot,
+          ...(signal ? { signal } : {}),
+        },
+        `Could not freshly fetch ${JSON.stringify(`${remote}/${branch}`)}.`,
+      )
+      const commit = (await runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args: ["rev-parse", "--verify", `${temporaryRef}^{commit}`],
+          cwd: repositoryRoot,
+          ...(signal ? { signal } : {}),
+        },
+        `Fetched branch ${JSON.stringify(`${remote}/${branch}`)} could not be pinned.`,
+      )).trim()
+      await runStage(
+        this.dependencies,
+        {
+          executable: "git",
+          args: ["update-ref", trackingRef, commit],
+          cwd: repositoryRoot,
+          ...(signal ? { signal } : {}),
+        },
+        `Could not update tracking ref ${JSON.stringify(`${remote}/${branch}`)}.`,
+      )
+      return { label: `${remote}/${branch}`, commit }
+    } finally {
+      try {
+        await this.dependencies.runner.run({
+          executable: "git",
+          args: ["update-ref", "-d", temporaryRef],
+          cwd: repositoryRoot,
+        })
+      } catch {
+        // A failed fetch may never create the temporary ref.
+      }
+    }
   }
 
   private async findExistingWorktree(
@@ -799,7 +1132,17 @@ export class HerdrDispatcher {
       },
       "Could not list existing Herdr worktrees.",
     )
-    return parseWorktreeListResult(output).find((worktree) => worktree.branch === branch)
+    const matching = parseWorktreeListResult(output).find(
+      (worktree) => worktree.branch === branch,
+    )
+    if (!matching) return undefined
+    const matchingPath = await this.dependencies.realpath(matching.path)
+    if (matchingPath === repositoryRoot || matching.isLinkedWorktree === false) {
+      throw new DispatchError(
+        `Branch ${JSON.stringify(branch)} is checked out in the primary checkout and cannot be used as a dispatch target. Choose a separate feature branch.`,
+      )
+    }
+    return { ...matching, path: matchingPath }
   }
 }
 
@@ -811,6 +1154,7 @@ export function formatDispatchResult(result: DispatchResult): string {
     `Branch: ${result.branch}`,
     ...(result.source ? [`Source: ${result.source}`] : []),
     `Base: ${result.base}`,
+    `Base commit: ${result.baseCommit}`,
     `Reused worktree: ${result.reusedWorktree ? "yes" : "no"}`,
     `Workspace ID: ${result.workspaceId}`,
     `Pane ID: ${result.paneId}`,
