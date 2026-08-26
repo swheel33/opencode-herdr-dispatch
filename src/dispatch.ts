@@ -567,6 +567,27 @@ export class HerdrDispatcher {
         linkedEnvironmentFiles,
       })
 
+      if (!existingWorktree) {
+        this.log("info", "Installing worktree dependencies", {
+          workspaceId: worktree.workspaceId,
+          worktreePath: worktree.path,
+        })
+        await runStage(
+          this.dependencies,
+          {
+            executable: "pnpm",
+            args: ["install"],
+            cwd: worktree.path,
+            ...(signal ? { signal } : {}),
+          },
+          "The worktree exists, but pnpm install failed; no agent was started and no cleanup was attempted.",
+        )
+        this.log("info", "Worktree dependencies installed", {
+          workspaceId: worktree.workspaceId,
+          worktreePath: worktree.path,
+        })
+      }
+
       let layout = parsePaneLayout(await runStage(
         this.dependencies,
         {

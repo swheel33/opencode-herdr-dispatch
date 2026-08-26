@@ -78,7 +78,7 @@ An unbased new dispatch resolves `origin`'s advertised default branch, fetches i
 
 The primary checkout is never a valid dispatch target. Existing linked worktrees may be reopened, but the plugin verifies their repository, branch, and path and confirms that the root branch, commit, and status remain unchanged before starting an agent. It never resets or repairs the root. Starting a fresh Build agent requires the selected worktree's root pane to be an available shell and its layout to be either one pane or the expected top-agent/bottom-shell 70/30 split. Other existing layouts fail safely rather than being silently reused or rearranged. Batch execution is not transactional: successful and partially created workspaces remain available when another selected feature fails.
 
-Feature workspaces are created without changing the user's focus. New single-pane workspaces are split 70/30 with the Build agent in the top pane and an interactive shell in the bottom pane, and the resulting geometry is verified before agent startup. Ignored `.env` and `.env.*` files from the primary checkout are linked with absolute symlinks into matching worktree paths; tracked examples are left untouched and existing destination files are never overwritten. The primary checkout remains the source of truth, so moving it breaks those links. Agent startup tolerates the short interval between pane creation and shell readiness.
+Feature workspaces are created without changing the user's focus. Ignored `.env` and `.env.*` files from the primary checkout are linked with absolute symlinks into matching worktree paths; tracked examples are left untouched and existing destination files are never overwritten. The primary checkout remains the source of truth, so moving it breaks those links. After linking local environment files, new worktrees run `pnpm install`; installation must succeed before pane setup or agent startup. Reopened worktrees retain their existing dependencies and skip installation. New single-pane workspaces are then split 70/30 with the Build agent in the top pane and an interactive shell in the bottom pane, and the resulting geometry is verified before agent startup. Agent startup tolerates the short interval between pane creation and shell readiness.
 
 ## Worktree Lifecycle
 
@@ -105,6 +105,7 @@ git rev-parse --verify <source>^{commit}
 herdr worktree list --cwd <repository-root>
 herdr worktree create --cwd <root> --branch <branch> --base <base> --label <title> --no-focus
 herdr worktree open --cwd <root> --path <path> --label <title> --no-focus
+pnpm install
 herdr pane layout --pane <pane>
 herdr pane split --pane <pane> --direction down --ratio 0.7 --cwd <worktree> --no-focus
 herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build
@@ -127,7 +128,7 @@ The project intentionally has no mocked unit-test suite. Its test command exerci
 npm run test:e2e
 ```
 
-The E2E run requires working OpenCode provider credentials, the plugin registered from this checkout, Herdr's current OpenCode integration, and a running Herdr server. It creates real model usage and may incur provider cost. By default it runs one real-AI `/feature` smoke scenario covering plan reuse, fresh origin pinning, Herdr layout, agent startup, environment links, and root immutability, followed by fast live-dispatcher checks for missing-origin failure and root-checkout protection. It does not wait for the Build agent to finish implementation. The slower multi-feature and AGENTS.md conflict scenarios remain opt-in with `E2E_SCENARIO=independent,agents-conflict`. Set `E2E_MODEL=provider/model-id` to override the configured model or `E2E_TIMEOUT_MS` to adjust the ten-minute scenario timeout. Temporary agents, worktrees, repositories, and remotes are force-removed after each scenario, including failures.
+The E2E run requires working OpenCode provider credentials, the plugin registered from this checkout, Herdr's current OpenCode integration, and a running Herdr server. It creates real model usage and may incur provider cost. By default it runs one real-AI `/feature` smoke scenario covering plan reuse, fresh origin pinning, Herdr layout, dependency installation, agent startup, nested environment links, and root immutability, followed by fast live-dispatcher checks for missing-origin failure and root-checkout protection. It does not wait for the Build agent to finish implementation. The slower multi-feature and AGENTS.md conflict scenarios remain opt-in with `E2E_SCENARIO=independent,agents-conflict`. Set `E2E_MODEL=provider/model-id` to override the configured model or `E2E_TIMEOUT_MS` to adjust the ten-minute scenario timeout. Temporary agents, worktrees, repositories, and remotes are force-removed after each scenario, including failures.
 
 ## License
 

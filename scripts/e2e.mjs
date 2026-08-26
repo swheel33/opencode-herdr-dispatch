@@ -60,13 +60,29 @@ async function createFixture(name) {
   const origin = `${root}-origin.git`
   const publisher = await mkdtemp(path.join(tmpdir(), `opencode-herdr-${name}-publisher-`))
   await mkdir(path.join(root, "src"))
-  await writeFile(path.join(root, ".gitignore"), ".env\n.env.local\n")
+  await mkdir(path.join(root, "apps", "demo"), { recursive: true })
+  await writeFile(
+    path.join(root, ".gitignore"),
+    ".env\n.env.local\n.pnpm-install-complete\n",
+  )
   await writeFile(path.join(root, ".env"), "E2E_SECRET=root\n")
   await writeFile(path.join(root, ".env.local"), "E2E_LOCAL=local\n")
+  await writeFile(
+    path.join(root, "apps", "demo", ".env.local"),
+    "VITE_NEST_API_URL=https://api.example.invalid/v1\n",
+  )
   await writeFile(path.join(root, ".env.example"), "E2E_SECRET=example\n")
   await writeFile(
     path.join(root, "package.json"),
-    `${JSON.stringify({ name: `herdr-${name}`, private: true, type: "module" }, null, 2)}\n`,
+    `${JSON.stringify({
+      name: `herdr-${name}`,
+      private: true,
+      type: "module",
+      scripts: {
+        postinstall:
+          "node -e \"require('node:fs').writeFileSync('.pnpm-install-complete', '')\"",
+      },
+    }, null, 2)}\n`,
   )
   await writeFile(
     path.join(root, "src", "server.js"),
@@ -136,7 +152,7 @@ async function listLinkedWorktrees(root) {
 }
 
 async function assertEnvironmentLinks(root, worktreePath) {
-  for (const relativePath of [".env", ".env.local"]) {
+  for (const relativePath of [".env", ".env.local", "apps/demo/.env.local"]) {
     const destination = path.join(worktreePath, relativePath)
     assert.ok((await lstat(destination)).isSymbolicLink(), `${relativePath} must be a symlink`)
     const target = await readlink(destination)
@@ -149,6 +165,13 @@ async function assertEnvironmentLinks(root, worktreePath) {
   assert.ok(
     !(await lstat(path.join(worktreePath, ".env.example"))).isSymbolicLink(),
     ".env.example must remain a tracked regular file",
+  )
+}
+
+async function assertDependenciesInstalled(worktreePath) {
+  assert.ok(
+    (await lstat(path.join(worktreePath, ".pnpm-install-complete"))).isFile(),
+    "pnpm install must run in the new worktree",
   )
 }
 
@@ -183,6 +206,7 @@ async function assertWorkspace(worktree, root) {
     return registered?.agent_session?.value ? registered : undefined
   })
   await assertEnvironmentLinks(root, worktree.path)
+  await assertDependenciesInstalled(worktree.path)
   return agent
 }
 
