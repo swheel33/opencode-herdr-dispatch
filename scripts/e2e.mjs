@@ -437,6 +437,33 @@ async function runRootTargetScenario() {
   }
 }
 
+async function runLinkedWorktreePluginScenario() {
+  const fixture = await createFixture("linked-plugin")
+  const linkedPath = `${fixture.root}-linked`
+  try {
+    await run(
+      "git",
+      ["worktree", "add", "-b", "feature/plugin-inert", linkedPath, "HEAD"],
+      fixture.root,
+    )
+    const config = JSON.parse(await run("opencode", ["debug", "config"], linkedPath))
+    assert.equal(
+      config.command?.feature,
+      undefined,
+      "plugin must not register /feature in a linked worktree",
+    )
+    assert.equal(
+      config.agent?.["herdr-feature-coordinator"],
+      undefined,
+      "plugin must not register its coordinator in a linked worktree",
+    )
+    process.stdout.write("PASS plugin stayed inert in a linked worktree\n")
+  } finally {
+    await cleanupFixture(fixture)
+    await rm(linkedPath, { recursive: true, force: true })
+  }
+}
+
 async function runAgentsConflictScenario(client) {
   const fixture = await createFixture("agents-conflict")
   const { root } = fixture
@@ -500,6 +527,7 @@ async function runAgentsConflictScenario(client) {
 async function runDispatchSafetyScenario() {
   await runMissingOriginScenario()
   await runRootTargetScenario()
+  await runLinkedWorktreePluginScenario()
 }
 
 const controller = new AbortController()
@@ -514,6 +542,7 @@ try {
     independent: runIndependentScenario,
     "missing-origin": runMissingOriginScenario,
     "root-target": runRootTargetScenario,
+    "linked-plugin": runLinkedWorktreePluginScenario,
     "agents-conflict": runAgentsConflictScenario,
     safety: runDispatchSafetyScenario,
   }

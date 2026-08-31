@@ -79,6 +79,36 @@ async function gitOutput(
   }
 }
 
+export async function isLinkedWorktree(
+  runner: CommandRunner,
+  cwd: string,
+  realpath: (path: string) => Promise<string>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const [gitDirResult, commonDirResult] = await Promise.all([
+      runner.run({
+        executable: "git",
+        args: ["rev-parse", "--git-dir"],
+        cwd,
+        ...(signal ? { signal } : {}),
+      }),
+      runner.run({
+        executable: "git",
+        args: ["rev-parse", "--git-common-dir"],
+        cwd,
+        ...(signal ? { signal } : {}),
+      }),
+    ])
+    const gitDir = await realpath(resolve(cwd, gitDirResult.stdout.trim()))
+    const commonDir = await realpath(resolve(cwd, commonDirResult.stdout.trim()))
+    return gitDir !== commonDir
+  } catch (error) {
+    if (error instanceof CommandError) return false
+    throw error
+  }
+}
+
 export async function resolveRepository(
   runner: CommandRunner,
   cwd: string,

@@ -6,6 +6,7 @@ import { dispatchBatch, formatBatchDispatchResult } from "./batch.js"
 import { HerdrDispatcher } from "./dispatch.js"
 import { DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
+import { isLinkedWorktree } from "./validation.js"
 import {
   configureFeatureWorkflow,
   FEATURE_COORDINATOR_AGENT,
@@ -45,6 +46,8 @@ const dispatchFeatureSchema = {
 
 const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   const runner = new NodeCommandRunner()
+  if (await isLinkedWorktree(runner, directory, realpath)) return {}
+
   const dispatcher = new HerdrDispatcher({
     runner,
     realpath,
