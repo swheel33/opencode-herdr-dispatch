@@ -31,6 +31,7 @@ async function maintenanceForTest(t, runner, commonDir) {
 
 test("renames the Herdr tab mapped to an OpenCode root session", async () => {
   const commands = []
+  let tabLabel
   const runner = {
     async run(command) {
       commands.push(command)
@@ -44,6 +45,10 @@ test("renames the Herdr tab mapped to an OpenCode root session", async () => {
           },
         }))
       }
+      if (command.args[1] === "get") {
+        return result(JSON.stringify({ result: { tab: { label: tabLabel } } }))
+      }
+      tabLabel = command.args[3]
       return result()
     },
   }
@@ -70,6 +75,7 @@ test("renames the Herdr tab mapped to an OpenCode root session", async () => {
     "w1:t2",
     "Implement billing exports",
   ])
+  assert.deepEqual(commands.at(-1).args, ["tab", "rename", "w1:t2", ""])
 })
 
 test("keeps the newest title when session updates overlap", async () => {
@@ -82,6 +88,7 @@ test("keeps the newest title when session updates overlap", async () => {
     unblockFirstRename = resolve
   })
   const renamedTitles = []
+  let tabLabel
   const runner = {
     async run(command) {
       if (command.args[0] === "agent") {
@@ -91,7 +98,11 @@ test("keeps the newest title when session updates overlap", async () => {
           },
         }))
       }
+      if (command.args[1] === "get") {
+        return result(JSON.stringify({ result: { tab: { label: tabLabel } } }))
+      }
       const title = command.args[3]
+      tabLabel = title
       renamedTitles.push(title)
       if (title === "First title") {
         releaseFirstRename()
@@ -120,9 +131,46 @@ test("keeps the newest title when session updates overlap", async () => {
   const second = synchronizer.handle(event("Newest title"))
   unblockFirstRename()
   await Promise.all([first, second])
+  assert.equal(renamedTitles.at(-1), "Newest title")
+  await synchronizer.dispose()
+})
+
+test("does not clear a Herdr tab title replaced by another owner", async () => {
+  const renamedTitles = []
+  const runner = {
+    async run(command) {
+      if (command.args[0] === "agent") {
+        return result(JSON.stringify({
+          result: {
+            agents: [{ agent_session: { value: "session-1" }, tab_id: "w1:t2" }],
+          },
+        }))
+      }
+      if (command.args[1] === "get") {
+        return result(JSON.stringify({ result: { tab: { label: "New session title" } } }))
+      }
+      renamedTitles.push(command.args[3])
+      return result()
+    },
+  }
+  const synchronizer = new HerdrTabTitleSynchronizer(runner, "/repo")
+
+  await synchronizer.handle({
+    type: "session.updated",
+    properties: {
+      info: {
+        id: "session-1",
+        projectID: "project-1",
+        directory: "/repo",
+        title: "Old session title",
+        version: "1",
+        time: { created: 1, updated: 2 },
+      },
+    },
+  })
   await synchronizer.dispose()
 
-  assert.equal(renamedTitles.at(-1), "Newest title")
+  assert.deepEqual(renamedTitles, ["Old session title"])
 })
 
 test("fast-forwards a clean checked-out develop branch", async (t) => {

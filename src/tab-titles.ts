@@ -11,6 +11,10 @@ interface HerdrAgent {
   tab_id?: unknown
 }
 
+interface HerdrTab {
+  label?: unknown
+}
+
 function parseSessionTab(stdout: string, sessionID: string): string | undefined {
   const parsed = JSON.parse(stdout) as { result?: { agents?: unknown } }
   if (!Array.isArray(parsed.result?.agents)) return undefined
@@ -21,11 +25,17 @@ function parseSessionTab(stdout: string, sessionID: string): string | undefined 
     ?.tab_id as string | undefined
 }
 
+function parseTabLabel(stdout: string): string | undefined {
+  const parsed = JSON.parse(stdout) as { result?: { tab?: HerdrTab } }
+  return typeof parsed.result?.tab?.label === "string" ? parsed.result.tab.label : undefined
+}
+
 export class HerdrTabTitleSynchronizer {
   private readonly controller = new AbortController()
   private readonly operations = new Set<Promise<void>>()
   private readonly latestTitles = new Map<string, string>()
   private readonly titles = new Map<string, string>()
+  private readonly tabTitles = new Map<string, string>()
   private queue = Promise.resolve()
 
   constructor(
@@ -80,6 +90,7 @@ export class HerdrTabTitleSynchronizer {
           cwd: this.cwd,
           signal: this.controller.signal,
         })
+        this.tabTitles.set(tabID, title)
         if (this.latestTitles.get(sessionID) !== title) return
         this.titles.set(sessionID, title)
         this.logger?.("debug", "Herdr tab renamed from OpenCode session", {
@@ -102,5 +113,31 @@ export class HerdrTabTitleSynchronizer {
   async dispose(): Promise<void> {
     this.controller.abort()
     await Promise.allSettled(this.operations)
+
+    await Promise.all([...this.tabTitles].map(async ([tabID, title]) => {
+      try {
+        const tab = await this.runner.run({
+          executable: "herdr",
+          args: ["tab", "get", tabID],
+          cwd: this.cwd,
+        })
+        if (parseTabLabel(tab.stdout) !== title) return
+
+        await this.runner.run({
+          executable: "herdr",
+          args: ["tab", "rename", tabID, ""],
+          cwd: this.cwd,
+        })
+        this.logger?.("debug", "Cleared the OpenCode session title from Herdr", {
+          tabID,
+          title,
+        })
+      } catch (error) {
+        this.logger?.("debug", "Could not clear the OpenCode session title from Herdr", {
+          tabID,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }))
   }
 }

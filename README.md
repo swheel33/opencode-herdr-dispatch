@@ -102,7 +102,7 @@ OpenCode processes inside linked worktrees receive only tab-title synchronizatio
 
 ## Tabs And Maintenance
 
-OpenCode root-session titles are matched to Herdr's reported agent sessions and applied to the corresponding tabs. Herdr derives tab width from label length, so named tabs expand automatically. Herdr 0.8 does not expose a separate tab-width setting.
+OpenCode root-session titles are matched to Herdr's reported agent sessions and applied to the corresponding tabs. When OpenCode exits, the plugin clears a title it still owns so the tab returns to its numeric label until a new session is titled. Herdr derives tab width from label length, so named tabs expand automatically. Herdr 0.8 does not expose a separate tab-width setting.
 
 In a primary checkout, maintenance is requested at startup and every 15 minutes. Multiple OpenCode tabs can use the same primary checkout safely: a repository-scoped lease and last-success timestamp ensure maintenance runs only once per repository per interval.
 
