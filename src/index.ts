@@ -5,8 +5,10 @@ import { tool, type Plugin } from "@opencode-ai/plugin"
 import { dispatchBatch, formatBatchDispatchResult } from "./batch.js"
 import { HerdrDispatcher } from "./dispatch.js"
 import { DispatchError } from "./errors.js"
+import { RepositoryMaintenance } from "./maintenance.js"
 import { NodeCommandRunner } from "./process.js"
-import { isLinkedWorktree } from "./validation.js"
+import { HerdrTabTitleSynchronizer } from "./tab-titles.js"
+import { isLinkedWorktree, resolveRepository } from "./validation.js"
 import {
   configureFeatureWorkflow,
   FEATURE_COORDINATOR_AGENT,
@@ -46,26 +48,48 @@ const dispatchFeatureSchema = {
 
 const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   const runner = new NodeCommandRunner()
-  if (await isLinkedWorktree(runner, directory, realpath)) return {}
+  const logger = (level: "debug" | "info" | "warn" | "error", message: string, metadata?: Record<string, unknown>) => {
+    void client.app
+      .log({
+        body: {
+          service: "opencode-herdr-dispatch",
+          level,
+          message,
+          ...(metadata ? { extra: metadata } : {}),
+        },
+      })
+      .catch(() => {})
+  }
+  const titleSynchronizer = new HerdrTabTitleSynchronizer(runner, directory, logger)
+  const linkedWorktree = await isLinkedWorktree(runner, directory, realpath)
+  if (linkedWorktree) {
+    return {
+      event: async ({ event }) => titleSynchronizer.handle(event),
+      dispose: async () => titleSynchronizer.dispose(),
+    }
+  }
 
-  const dispatcher = new HerdrDispatcher({
-    runner,
-    realpath,
-    logger(level, message, metadata) {
-      void client.app
-        .log({
-          body: {
-            service: "opencode-herdr-dispatch",
-            level,
-            message,
-            ...(metadata ? { extra: metadata } : {}),
-          },
-        })
-        .catch(() => {})
-    },
-  })
+  const dispatcher = new HerdrDispatcher({ runner, realpath, logger })
+  let maintenance: RepositoryMaintenance | undefined
+  try {
+    const repository = await resolveRepository(runner, directory, realpath)
+    maintenance = new RepositoryMaintenance(runner, repository.root, repository.commonDir, logger)
+    maintenance.start()
+  } catch (error) {
+    logger("debug", "Repository maintenance is unavailable outside a primary Git checkout", {
+      directory,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
 
   return {
+    event: async ({ event }) => titleSynchronizer.handle(event),
+    dispose: async () => {
+      await Promise.all([
+        titleSynchronizer.dispose(),
+        maintenance?.dispose() ?? Promise.resolve(),
+      ])
+    },
     config: async (config) => {
       configureFeatureWorkflow(config)
     },

@@ -1,21 +1,26 @@
 # opencode-herdr-dispatch
 
-An OpenCode plugin that turns cohesive implementation outcomes discussed in a thread into background Herdr feature workspaces. It creates or reopens Git worktrees, links local environment files, enforces 70/30 agent and shell layouts, starts OpenCode Build agents, and delivers self-contained handoffs.
+An OpenCode plugin for turning an agreed implementation plan into a background Herdr worktree and OpenCode Build agent.
 
-The plugin registers a `/feature` command and an isolated hidden `herdr-feature-coordinator` subagent. The coordinator reads bounded conversational context since the previous `/feature` and groups work by user-visible outcome rather than implementation layer. Supporting UI, API, migration, configuration, refactor, test, and documentation work stays in one dispatch. It creates multiple dispatches only for independently valuable and releasable outcomes with no shared foundation or likely file/contract ownership. A single clear feature dispatches immediately; multiple features require a multi-select confirmation that also accepts grouping corrections. Every selected feature uses one deterministic Git strategy:
+The plugin provides:
 
-- `new`: freshly fetch and pin `origin`'s default branch, or use an explicit base.
-- `continue`: fetch and continue an existing local or remote branch. This is the default when an existing branch, PR, or another person's work is mentioned.
-- `branch_from`: create a separate branch from existing work when the user explicitly asks to branch off or keep changes separate.
+- `/feature` for selecting and dispatching cohesive implementation outcomes.
+- Safe Git worktree creation without changing the primary checkout.
+- A 70/30 agent and shell pane layout.
+- Herdr tab names synchronized with OpenCode session titles.
+- Periodic `develop` refresh and cleanup of worktrees whose GitHub pull requests have closed.
 
 ## Requirements
 
 - OpenCode V1
 - Herdr 0.8 or newer
+- Herdr's OpenCode integration
 - Git
+- GitHub CLI (`gh`), authenticated for automatic PR cleanup
 - Node.js 20 or newer
+- pnpm for installing dependencies in new worktrees
 
-Install Herdr's OpenCode integration separately so Herdr can report and restore agent state:
+Install Herdr's OpenCode integration once:
 
 ```sh
 herdr integration install opencode
@@ -23,7 +28,7 @@ herdr integration install opencode
 
 ## Install
 
-Clone, install, and build at a stable path:
+Clone and build the plugin at a stable path:
 
 ```sh
 git clone https://github.com/swheel33/opencode-herdr-dispatch.git ~/Work/opencode-herdr-dispatch
@@ -32,7 +37,7 @@ npm ci
 npm run build
 ```
 
-Load the compiled plugin from `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json`:
+Add the compiled plugin to `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
@@ -43,92 +48,105 @@ Load the compiled plugin from `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/openco
 }
 ```
 
-Use an absolute `file://` URL; `~` and environment variables are not expanded inside it. Do not copy or symlink `commands/feature.md` or an agent definition into OpenCode's config directories. In a primary checkout, the plugin registers the command, coordinator, and least-privilege dispatch permissions at startup. It stays inert when OpenCode starts in a linked worktree, so dispatched Build agents cannot launch another coordinator or nested worktree dispatch.
+Use an absolute `file://` URL. OpenCode does not expand `~` or environment variables in plugin paths.
 
-Existing installations should remove the old copied `~/.config/opencode/commands/feature.md` and obsolete `dispatch_to_herdr` Plan-agent permission override. Restart OpenCode after installation or configuration changes.
+Do not separately install `commands/feature.md` or an agent definition. The plugin registers its command, coordinator, tools, and permissions at runtime. Remove any copied legacy `/feature` command or `dispatch_to_herdr` permission override from older installations.
 
-After updating the checkout, rebuild the configured artifact before restarting OpenCode:
-
-```sh
-git pull
-npm ci
-npm run typecheck
-npm run build
-```
+Restart OpenCode after installing, rebuilding, or changing its configuration.
 
 ## Usage
 
-Run OpenCode in a repository's primary checkout. Discuss one or more implementation ideas, then invoke `/feature`:
+Discuss the work in a primary checkout, then run:
 
 ```text
 /feature
-/feature only the architecture proposals
-/feature include tests on Alice's existing vault filtering branch
+/feature only the architecture proposal
+/feature continue Alice's existing filtering branch
 ```
 
-When the latest relevant assistant response is already implementation-ready, the coordinator reuses it substantively unchanged instead of planning again. It reads applicable `AGENTS.md` files and asks before changing a supplied plan that conflicts with them. Otherwise it inspects source only to resolve a missing implementation decision and creates the smallest sufficient handoff. The coordinator prefers direct implementations, avoids speculative abstractions and unrequested verification or compatibility work, and treats genuinely greenfield work as having no legacy requirements.
+The hidden `herdr-feature-coordinator` reads the relevant conversation since the previous `/feature`, reuses an implementation-ready plan when one exists, resolves the Git strategy, and dispatches the work.
 
-One cohesive feature dispatches without implementation confirmation. Genuinely independent features are presented with independence rationales for multi-select confirmation; a custom response can merge or revise the grouping. Ambiguity and dirty-checkout overrides still require approval. One batch call then starts up to three selected dispatches concurrently. A batch accepts at most eight features, rejects duplicate target branches before dispatch, and reports each result independently.
+One cohesive outcome creates one worktree. Multiple worktrees are used only for independently valuable changes that can be implemented and merged separately. When multiple outcomes are found, the coordinator asks one multi-select question before dispatching them.
 
-The first `/feature` in a thread receives its visible user and assistant discussion. Later invocations receive discussion since the previous `/feature`, preventing old features and injected child prompts from recursively contaminating new work. Reasoning and tool output are excluded, and context is bounded. Use command arguments to explicitly bring back an older or cancelled proposal.
+The coordinator may ask for clarification when:
 
-The primary checkout must be clean by default because uncommitted files are not present in a new worktree. After explicit user confirmation, the coordinator may set `allowDirtyRoot` for an intentional override.
+- The requested behavior or feature grouping is ambiguous.
+- An existing branch or pull request cannot be identified safely.
+- Project instructions conflict with the supplied plan.
+- The primary checkout is dirty and an override is required.
 
-An unbased new dispatch resolves `origin`'s advertised default branch, fetches it into its remote-tracking ref, pins the fetched commit, and creates the worktree from that OID. It fails without side effects when `origin` or a fresh default-branch fetch is unavailable; use an explicit local base such as `HEAD` only when local state is intentionally desired. Explicit remote sources are also freshly fetched and pinned.
+## Git Strategies
 
-The primary checkout is never a valid dispatch target. Existing linked worktrees may be reopened, but the plugin verifies their repository, branch, and path and confirms that the root branch, commit, and status remain unchanged before starting an agent. OpenCode processes started inside those worktrees do not receive `/feature`, the coordinator, or the dispatch tools. The dispatcher also independently rejects a linked worktree as its source directory. It never resets or repairs the root. Starting a fresh Build agent requires the selected worktree's root pane to be an available shell and its layout to be either one pane or the expected top-agent/bottom-shell 70/30 split. Other existing layouts fail safely rather than being silently reused or rearranged. Batch execution is not transactional: successful and partially created workspaces remain available when another selected feature fails.
+Each dispatch uses one strategy:
 
-Feature workspaces are created without changing the user's focus. Ignored `.env` and `.env.*` files from the primary checkout are linked with absolute symlinks into matching worktree paths; tracked examples are left untouched and existing destination files are never overwritten. The primary checkout remains the source of truth, so moving it breaks those links. After linking local environment files, new worktrees run `pnpm install`; installation must succeed before pane setup or agent startup. Reopened worktrees retain their existing dependencies and skip installation. New single-pane workspaces are then split 70/30 with the Build agent in the top pane and an interactive shell in the bottom pane, and the resulting geometry is verified before agent startup. Agent startup tolerates the short interval between pane creation and shell readiness.
+- `new`: create a branch from a freshly fetched and pinned base. Without an explicit base, this uses `origin`'s advertised default branch.
+- `continue`: reopen an existing local or remote branch. Mentions of existing work default to this strategy.
+- `branch_from`: create separate work based on another branch when explicitly requested.
 
-## Worktree Lifecycle
+The dispatcher validates the repository, branch, base commit, worktree path, and primary-checkout state before starting an agent. It never resets or repairs the primary checkout. Concurrent batch results are independent, so successful or partially created workspaces remain available if another dispatch fails.
 
-Herdr owns lifecycle UI; this project does not install a Herdr plugin and never removes worktrees automatically.
+## Worktree Setup
 
-Right-click a linked worktree in Herdr:
+For a new worktree, the plugin:
 
-- `Close` parks the Herdr space and retains the checkout.
-- `Delete worktree checkout...` safely removes the space and checkout, with a force confirmation for dirty or untracked files.
+1. Creates the Herdr worktree without changing focus.
+2. Links ignored `.env` and `.env.*` files from the primary checkout without overwriting existing files.
+3. Runs `pnpm install`.
+4. Creates or validates a 70/30 top-agent and bottom-shell layout.
+5. Starts an OpenCode Build agent.
+6. Delivers the implementation plan and waits for OpenCode to begin processing it.
 
-Herdr retains the Git branch in both cases.
+Existing worktrees skip dependency installation. Unexpected pane layouts fail safely instead of being rearranged.
 
-## Commands
+OpenCode processes inside linked worktrees receive only tab-title synchronization. They cannot invoke `/feature` or recursively dispatch more worktrees.
 
-The plugin uses argv spawning without shell interpolation. Depending on strategy and existing state, it runs a subset of:
+## Tabs And Maintenance
 
-```text
-git status --porcelain --untracked-files=all
-git remote
-git ls-remote --symref origin HEAD
-git fetch --no-tags <remote> +refs/heads/<branch>:refs/opencode-herdr-dispatch/<unique-id>
-git update-ref refs/remotes/<remote>/<branch> <fetched-commit>
-git rev-parse --verify <source>^{commit}
-herdr worktree list --cwd <repository-root>
-herdr worktree create --cwd <root> --branch <branch> --base <base> --label <title> --no-focus
-herdr worktree open --cwd <root> --path <path> --label <title> --no-focus
-pnpm install
-herdr pane layout --pane <pane>
-herdr pane split --pane <pane> --direction down --ratio 0.7 --cwd <worktree> --no-focus
-herdr agent start <name> --kind opencode --pane <pane> --timeout 60000 -- --agent build
-herdr agent prompt <name> <plan> --wait --until working --timeout 60000
-```
+OpenCode root-session titles are matched to Herdr's reported agent sessions and applied to the corresponding tabs. Herdr derives tab width from label length, so named tabs expand automatically. Herdr 0.8 does not expose a separate tab-width setting.
 
-Plan contents are redacted from command errors and logs. Prompt delivery succeeds only after the OpenCode integration reports that the newly submitted message is being processed. If Herdr reports a stalled prompt, the plugin inspects the agent and retries delivery once only when it is still idle at the unchanged state sequence; all other timeout or stalled states return an explicit error. The worktree, pane, and agent are preserved after failures, and partial dispatches are never cleaned up automatically.
+In a primary checkout, maintenance is requested at startup and every 15 minutes. Multiple OpenCode tabs can use the same primary checkout safely: a repository-scoped lease and last-success timestamp ensure maintenance runs only once per repository per interval.
 
-## Development
+Each successful maintenance run:
+
+1. Fetches and prunes `origin`.
+2. Fast-forwards local `develop` to `origin/develop` when safe.
+3. Lists linked worktrees and their same-repository GitHub pull requests.
+4. Removes worktrees for closed or merged PRs when the PR head still matches the worktree commit.
+
+Missing, dirty, or diverged `develop` branches are left untouched. An open matching PR always preserves its worktree. Branches without a matching PR are ignored.
+
+Closed-PR cleanup calls Herdr with `--force`. Dirty and untracked worktree files are deleted along with the Herdr workspace, tabs, and panes. The Git branch itself is retained. The commit check prevents an older PR from deleting a newly reused branch.
+
+## Updating
 
 ```sh
+cd ~/Work/opencode-herdr-dispatch
+git pull
 npm ci
+npm test
 npm run typecheck
 npm run build
 ```
 
-The project intentionally has no mocked unit-test suite. Its test command exercises the configured AI model, the real `/feature` command, OpenCode plugin loading and question API, Git worktrees, Herdr agents and pane geometry, and physical environment-file symlinks in disposable repositories:
+Restart OpenCode after rebuilding.
+
+## Development
+
+Focused tests cover title synchronization, concurrent title updates, `develop` fast-forwarding, PR cleanup, and maintenance lease suppression:
+
+```sh
+npm test
+npm run typecheck
+npm run build
+```
+
+The real end-to-end workflow requires a running Herdr server, OpenCode provider credentials, the configured plugin, and Herdr's OpenCode integration:
 
 ```sh
 npm run test:e2e
 ```
 
-The E2E run requires working OpenCode provider credentials, the plugin registered from this checkout, Herdr's current OpenCode integration, and a running Herdr server. It creates real model usage and may incur provider cost. By default it runs one real-AI `/feature` smoke scenario covering plan reuse, fresh origin pinning, Herdr layout, dependency installation, agent startup, nested environment links, and root immutability, followed by fast checks for missing-origin failure, root-checkout protection, and inert plugin setup inside linked worktrees. It does not wait for the Build agent to finish implementation. The slower multi-feature and AGENTS.md conflict scenarios remain opt-in with `E2E_SCENARIO=independent,agents-conflict`. Set `E2E_MODEL=provider/model-id` to override the configured model or `E2E_TIMEOUT_MS` to adjust the ten-minute scenario timeout. Temporary agents, worktrees, repositories, and remotes are force-removed after each scenario, including failures.
+The E2E test creates disposable repositories, worktrees, panes, and agents and may incur model usage. Set `E2E_MODEL=provider/model-id`, `E2E_TIMEOUT_MS=<milliseconds>`, or `E2E_SCENARIO=independent,agents-conflict` to customize it.
 
 ## License
 
