@@ -1,6 +1,6 @@
 # opencode-herdr-dispatch
 
-An OpenCode plugin for turning an agreed implementation plan into a background Herdr worktree and OpenCode Build agent.
+An OpenCode plugin for turning an agreed implementation plan into a background Herdr worktree and OpenCode implementation agent.
 
 The plugin provides:
 
@@ -50,9 +50,27 @@ Add the compiled plugin to `~/.config/opencode/opencode.json`:
 
 Use an absolute `file://` URL. OpenCode does not expand `~` or environment variables in plugin paths.
 
-Do not separately install `commands/feature.md` or an agent definition. The plugin registers its command, coordinator, tools, and permissions at runtime. Remove any copied legacy `/feature` command or `dispatch_to_herdr` permission override from older installations.
+Do not separately install `commands/feature.md` or an agent definition. The plugin registers its command, Plan model, implementor, tools, and permissions at runtime. Remove any copied legacy `/feature` command or `dispatch_to_herdr` permission override from older installations.
 
 Restart OpenCode after installing, rebuilding, or changing its configuration.
+
+## Model Configuration
+
+Configure the orchestrator (Plan mode and `/feature`) and implementor independently using plugin options:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["file:///home/YOUR_USER/Work/opencode-herdr-dispatch/dist/index.js", {
+      "orchestrator": { "model": "openai/gpt-6-astra", "variant": "default" },
+      "implementor": { "model": "openai/gpt-5.6-luna", "variant": "high" }
+    }]
+  ]
+}
+```
+
+These are the defaults. Use any available `provider/model` and a variant supported by that model. When changing a model without specifying a variant, the plugin uses `default` rather than inheriting the previous model's reasoning level. Configure the plugin globally so the implementor settings are also available in new worktrees.
 
 ## Usage
 
@@ -64,11 +82,15 @@ Discuss the work in a primary checkout, then run:
 /feature continue Alice's existing filtering branch
 ```
 
-The hidden `herdr-feature-coordinator` reads the relevant conversation since the previous `/feature`, reuses an implementation-ready plan when one exists, resolves the Git strategy, and dispatches the work.
+Stay in Plan mode to discuss the work, then run `/feature` in the same conversation. The orchestrator passes the settled plan directly to the dispatch tool. The implementor runs separately using its configured model and variant.
 
-One cohesive outcome creates one worktree. Multiple worktrees are used only for independently valuable changes that can be implemented and merged separately. When multiple outcomes are found, the coordinator asks one multi-select question before dispatching them.
+The command issues a single-use authorization bound to its session and user message. Ordinary conversation cannot authorize dispatch, even when it says “implement this.” Authorization expires when another user message arrives, the session becomes idle/errors/exits, or dispatch consumes it. Clarification through the question tool can happen within the command turn; if planning ends without dispatch, run `/feature` again when ready. Plan edits, task delegation, and `plan_exit` are denied.
 
-The coordinator may ask for clarification when:
+Ready plans are copied rather than expanded. Later corrections override earlier proposals; necessary explicitly referenced details are included. Small changes can have a one-paragraph handoff. The legacy coordinator registration is disabled.
+
+One cohesive outcome creates one worktree. Multiple worktrees are used only for independently valuable changes that can be implemented and merged separately. When multiple outcomes are found, the orchestrator asks one multi-select question before dispatching them.
+
+The Plan agent may ask for clarification when:
 
 - The requested behavior or feature grouping is ambiguous.
 - An existing branch or pull request cannot be identified safely.
@@ -93,12 +115,14 @@ For a new worktree, the plugin:
 2. Links ignored `.env` and `.env.*` files from the primary checkout without overwriting existing files.
 3. Runs `pnpm install`.
 4. Creates or validates a 70/30 top-agent and bottom-shell layout.
-5. Starts an OpenCode Build agent.
+5. Starts the OpenCode `herdr-implementor` agent with the configured model and variant.
 6. Delivers the implementation plan and waits for OpenCode to begin processing it.
 
 Existing worktrees skip dependency installation. Unexpected pane layouts fail safely instead of being rearranged.
 
-OpenCode processes inside linked worktrees receive only tab-title synchronization. They cannot invoke `/feature` or recursively dispatch more worktrees.
+OpenCode processes inside linked worktrees receive tab-title synchronization and the implementor definition. They cannot invoke `/feature` or recursively dispatch more worktrees.
+
+The exact handoff, source conversation message IDs, and dispatch results are recorded locally in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. The dispatch result includes its receipt ID.
 
 ## Tabs And Maintenance
 

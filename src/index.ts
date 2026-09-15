@@ -1,4 +1,5 @@
-import { realpath } from "node:fs/promises"
+import { appendFile, mkdir, realpath } from "node:fs/promises"
+import path from "node:path"
 
 import { tool, type Plugin } from "@opencode-ai/plugin"
 
@@ -11,8 +12,8 @@ import { HerdrTabTitleSynchronizer } from "./tab-titles.js"
 import { isLinkedWorktree, resolveRepository } from "./validation.js"
 import {
   configureFeatureWorkflow,
-  FEATURE_COORDINATOR_AGENT,
-  renderParentThreadContext,
+  FeatureAuthorization,
+  resolveWorkflowModels,
 } from "./workflow.js"
 
 const dispatchFeatureSchema = {
@@ -46,7 +47,12 @@ const dispatchFeatureSchema = {
     ),
 }
 
-const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
+const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) => {
+  const models = resolveWorkflowModels(options)
+  // Capture mode exercises the same command, model, schema, and authorization path
+  // without maintenance, repository mutations, or starting an implementation agent.
+  const captureOnly = options.captureOnly === true
+  const authorization = new FeatureAuthorization()
   const runner = new NodeCommandRunner()
   const logger = (level: "debug" | "info" | "warn" | "error", message: string, metadata?: Record<string, unknown>) => {
     void client.app
@@ -64,17 +70,18 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   const linkedWorktree = await isLinkedWorktree(runner, directory, realpath)
   if (linkedWorktree) {
     return {
+      config: async (config) => configureFeatureWorkflow(config, true, models),
       event: async ({ event }) => titleSynchronizer.handle(event),
       dispose: async () => titleSynchronizer.dispose(),
     }
   }
 
-  const dispatcher = new HerdrDispatcher({ runner, realpath, logger })
+  const dispatcher = new HerdrDispatcher({ runner, realpath, logger }, models.implementor.model)
   let maintenance: RepositoryMaintenance | undefined
   try {
     const repository = await resolveRepository(runner, directory, realpath)
     maintenance = new RepositoryMaintenance(runner, repository.root, repository.commonDir, logger)
-    maintenance.start()
+    if (!captureOnly) maintenance.start()
   } catch (error) {
     logger("debug", "Repository maintenance is unavailable outside a primary Git checkout", {
       directory,
@@ -83,7 +90,14 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
   }
 
   return {
-    event: async ({ event }) => titleSynchronizer.handle(event),
+    event: async ({ event }) => {
+      if (event.type === "session.idle" || event.type === "session.error" || event.type === "session.deleted") {
+        const properties = event.properties as { sessionID?: string; info?: { id: string } }
+        const sessionID = properties.sessionID ?? properties.info?.id
+        if (sessionID) authorization.clear(sessionID)
+      }
+      await titleSynchronizer.handle(event)
+    },
     dispose: async () => {
       await Promise.all([
         titleSynchronizer.dispose(),
@@ -91,7 +105,11 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
       ])
     },
     config: async (config) => {
-      configureFeatureWorkflow(config)
+      configureFeatureWorkflow(config, false, models)
+    },
+    "chat.message": async (input, output) => {
+      authorization.bind(input.sessionID, output.message.id,
+        output.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n"))
     },
     "command.execute.before": async (input, output) => {
       if (input.command !== "feature") return
@@ -106,31 +124,8 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
         )
       }
 
-      const subtask = output.parts.find(
-        (part) => part.type === "subtask" && part.agent === FEATURE_COORDINATOR_AGENT,
-      )
-      if (!subtask || subtask.type !== "subtask") {
-        throw new DispatchError(
-          "/feature did not resolve to the Herdr feature coordinator subtask.",
-        )
-      }
-
-      const context = renderParentThreadContext(response.data)
-      subtask.prompt = `${subtask.prompt}\n\n${context}`
-      void client.app
-        .log({
-          body: {
-            service: "opencode-herdr-dispatch",
-            level: "debug",
-            message: "Parent-thread context attached to feature coordinator",
-            extra: {
-              sessionID: input.sessionID,
-              messageCount: response.data.length,
-              contextLength: context.length,
-            },
-          },
-        })
-        .catch(() => {})
+      const token = authorization.issue(input.sessionID, response.data.map((message) => message.info.id))
+      output.parts.push({ type: "text", text: authorization.marker(token) } as typeof output.parts[number])
     },
     tool: {
       inspect_herdr_repository: tool({
@@ -138,10 +133,14 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
           "Read the Git state needed to plan Herdr feature dispatches. Returns status, local and remote branches, remotes, and recent commits without changing the repository.",
         args: {},
         async execute(_args, context) {
-          if (context.agent !== FEATURE_COORDINATOR_AGENT) {
+          if (context.agent !== "plan") {
             throw new DispatchError(
-              `Repository dispatch inspection is restricted to the ${FEATURE_COORDINATOR_AGENT} agent.`,
+              "Repository dispatch inspection is restricted to the Plan agent.",
             )
+          }
+
+          if (captureOnly && typeof options.repositorySnapshot === "string") {
+            return options.repositorySnapshot
           }
 
           const commands = [
@@ -177,8 +176,9 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
       }),
       dispatch_features_to_herdr: tool({
         description:
-          "Dispatch one clear feature or one confirmed selection of independent features to separate Herdr worktrees and OpenCode Build agents. The /feature coordinator calls this exactly once.",
+          "Dispatch the agreed plan once after /feature authorization. Each feature creates a separate worktree. Ordinary conversation cannot authorize this tool.",
         args: {
+          authorization: tool.schema.string().describe("Exact feature_authorization token from the current /feature invocation"),
           features: tool.schema
             .array(tool.schema.object(dispatchFeatureSchema))
             .min(1)
@@ -192,11 +192,15 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
             ),
         },
         async execute(args, context) {
-          if (context.agent !== FEATURE_COORDINATOR_AGENT) {
+          if (context.agent !== "plan") {
             throw new DispatchError(
-              `Batch dispatch is restricted to the ${FEATURE_COORDINATOR_AGENT} agent.`,
+              "Dispatch is restricted to the Plan agent using /feature.",
             )
           }
+          const messages = await client.session.messages({ path: { id: context.sessionID }, query: { directory } })
+          if (!messages.data) throw new DispatchError("Cannot verify current dispatch authorization.")
+          const latestUser = [...messages.data].reverse().find((message) => message.info.role === "user")
+          const sourceMessageIDs = authorization.consume(context.sessionID, args.authorization, latestUser?.info.id ?? "")
 
           const input = {
             features: args.features.map((feature) => ({
@@ -212,15 +216,28 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }) => {
               ? {}
               : { allowDirtyRoot: args.allowDirtyRoot }),
           }
-          return formatBatchDispatchResult(
-            await dispatchBatch(
+          if (captureOnly) {
+            return JSON.stringify({ captured: true, sessionID: context.sessionID, sourceMessageIDs, input })
+          }
+          const repository = await resolveRepository(runner, context.directory, realpath, context.abort)
+          const receiptDirectory = path.join(repository.commonDir, "opencode-herdr-dispatch")
+          await mkdir(receiptDirectory, { recursive: true })
+          const receiptPath = path.join(receiptDirectory, "handoffs.jsonl")
+          const receiptID = args.authorization
+          await appendFile(receiptPath, JSON.stringify({ id: receiptID, state: "requested", time: new Date().toISOString(), sessionID: context.sessionID, sourceMessageIDs, input }) + "\n", { mode: 0o600 })
+          const result = await dispatchBatch(
               dispatcher,
               runner,
               context.directory,
               input,
               context.abort,
-            ),
-          )
+            )
+          try {
+            await appendFile(receiptPath, JSON.stringify({ id: receiptID, state: "result", time: new Date().toISOString(), result }) + "\n", { mode: 0o600 })
+          } catch (error) {
+            return `${formatBatchDispatchResult(result)}\nDispatch receipt: ${receiptID}\nResult recording failed: ${String(error)}. Inspect the reported agents before retrying.`
+          }
+          return `${formatBatchDispatchResult(result)}\nDispatch receipt: ${receiptID}`
         },
       }),
     },

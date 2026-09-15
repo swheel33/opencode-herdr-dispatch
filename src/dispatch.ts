@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises"
 
 import { CommandError, DispatchError } from "./errors.js"
 import { NodeCommandRunner } from "./process.js"
+import { IMPLEMENTOR_AGENT, IMPLEMENTOR_MODEL } from "./workflow.js"
 import type {
   CommandSpec,
   DispatchDependencies,
@@ -377,6 +378,7 @@ export class HerdrDispatcher {
       runner: new NodeCommandRunner(),
       realpath,
     },
+    private readonly implementationModel = IMPLEMENTOR_MODEL,
   ) {}
 
   private log(
@@ -672,7 +674,9 @@ export class HerdrDispatcher {
           "60000",
           "--",
           "--agent",
-          "build",
+          IMPLEMENTOR_AGENT,
+          "--model",
+          this.implementationModel,
         ],
         cwd: repository.root,
         ...(signal ? { signal } : {}),
