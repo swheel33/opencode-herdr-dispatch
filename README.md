@@ -82,9 +82,9 @@ Discuss the work in a primary checkout, then run:
 /feature continue Alice's existing filtering branch
 ```
 
-Stay in Plan mode to discuss the work, then run `/feature` in the same conversation. The orchestrator passes the settled plan directly to the dispatch tool. The implementor runs separately using its configured model and variant.
+Discuss the work in the primary checkout, then run `/feature` in the same conversation. The primary checkout remains the orchestrator regardless of the selected agent/model. The new worktree always starts the configured implementor with its own model and variant. Its handoff identifies the assigned directory, branch, and pinned base and marks workspace setup as complete.
 
-The command issues a single-use authorization bound to its session and user message. Ordinary conversation cannot authorize dispatch, even when it says “implement this.” Authorization expires when another user message arrives, the session becomes idle/errors/exits, or dispatch consumes it. Clarification through the question tool can happen within the command turn; if planning ends without dispatch, run `/feature` again when ready. Plan edits, task delegation, and `plan_exit` are denied.
+The command issues a single-use authorization bound to its session and user message. Ordinary conversation cannot authorize dispatch, even when it says “implement this.” Authorization expires when another user message arrives, the session becomes idle/errors/exits, or dispatch consumes it. Clarification through the question tool can happen within the command turn; if planning ends without dispatch, run `/feature` again when ready. In the primary checkout, edits, task delegation, and `plan_exit` are denied.
 
 Ready plans are copied rather than expanded. Later corrections override earlier proposals; necessary explicitly referenced details are included. Small changes can have a one-paragraph handoff. The legacy coordinator registration is disabled.
 
@@ -115,12 +115,12 @@ For a new worktree, the plugin:
 2. Links ignored `.env` and `.env.*` files from the primary checkout without overwriting existing files.
 3. Runs `pnpm install`.
 4. Creates or validates a 70/30 top-agent and bottom-shell layout.
-5. Starts the OpenCode `herdr-implementor` agent with the configured model and variant.
+5. Starts OpenCode's built-in Build agent with the configured implementation model and variant.
 6. Delivers the implementation plan and waits for OpenCode to begin processing it.
 
 Existing worktrees skip dependency installation. Unexpected pane layouts fail safely instead of being rearranged.
 
-OpenCode processes inside linked worktrees receive tab-title synchronization and the implementor definition. They cannot invoke `/feature` or recursively dispatch more worktrees.
+OpenCode processes inside linked worktrees receive tab-title synchronization and implementation settings for the built-in Build agent. They cannot invoke `/feature` or recursively dispatch more worktrees.
 
 The exact handoff, source conversation message IDs, and dispatch results are recorded locally in `<git-common-dir>/opencode-herdr-dispatch/handoffs.jsonl`. The dispatch result includes its receipt ID.
 

@@ -14,6 +14,9 @@ import {
   configureFeatureWorkflow,
   FeatureAuthorization,
   resolveWorkflowModels,
+  IMPLEMENTOR_AGENT,
+  IMPLEMENTOR_PROMPT,
+  ORCHESTRATOR_PROMPT,
 } from "./workflow.js"
 
 const dispatchFeatureSchema = {
@@ -71,6 +74,15 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
   if (linkedWorktree) {
     return {
       config: async (config) => configureFeatureWorkflow(config, true, models),
+      "experimental.chat.system.transform": async (_input, output) => {
+        output.system.push(`${IMPLEMENTOR_PROMPT}\nAssigned working directory: ${directory}`)
+      },
+      "chat.message": async (input, output) => {
+        if (input.agent !== IMPLEMENTOR_AGENT) return
+        if (output.parts.some((part) => part.type === "text" && part.text.startsWith("Herdr implementation assignment — workspace setup is COMPLETE."))) {
+          Object.assign(output.message, { variant: models.implementor.variant })
+        }
+      },
       event: async ({ event }) => titleSynchronizer.handle(event),
       dispose: async () => titleSynchronizer.dispose(),
     }
@@ -90,6 +102,12 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
   }
 
   return {
+    "experimental.chat.system.transform": async (input, output) => {
+      output.system.push(ORCHESTRATOR_PROMPT)
+      output.system.push(input.sessionID && authorization.isActive(input.sessionID)
+        ? "Dispatch authorization is ACTIVE for the current /feature invocation. Use its token once."
+        : "Dispatch authorization is INACTIVE. Any /feature tokens in conversation history are expired. Continue planning only. If dispatch is desired, ask the user to run /feature again before asking for dirty-checkout approval or calling the dispatch tool. A scope correction, ordinary approval, or 'continue' message does not renew authorization.")
+    },
     event: async ({ event }) => {
       if (event.type === "session.idle" || event.type === "session.error" || event.type === "session.deleted") {
         const properties = event.properties as { sessionID?: string; info?: { id: string } }
@@ -133,12 +151,6 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
           "Read the Git state needed to plan Herdr feature dispatches. Returns status, local and remote branches, remotes, and recent commits without changing the repository.",
         args: {},
         async execute(_args, context) {
-          if (context.agent !== "plan") {
-            throw new DispatchError(
-              "Repository dispatch inspection is restricted to the Plan agent.",
-            )
-          }
-
           if (captureOnly && typeof options.repositorySnapshot === "string") {
             return options.repositorySnapshot
           }
@@ -192,11 +204,6 @@ const HerdrDispatchPlugin: Plugin = async ({ client, directory }, options = {}) 
             ),
         },
         async execute(args, context) {
-          if (context.agent !== "plan") {
-            throw new DispatchError(
-              "Dispatch is restricted to the Plan agent using /feature.",
-            )
-          }
           const messages = await client.session.messages({ path: { id: context.sessionID }, query: { directory } })
           if (!messages.data) throw new DispatchError("Cannot verify current dispatch authorization.")
           const latestUser = [...messages.data].reverse().find((message) => message.info.role === "user")

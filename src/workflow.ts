@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { Config } from "@opencode-ai/plugin"
 
-export const IMPLEMENTOR_AGENT = "herdr-implementor"
+export const IMPLEMENTOR_AGENT = "build"
 export const ORCHESTRATOR_MODEL = "openai/gpt-6-astra"
 export const IMPLEMENTOR_MODEL = "openai/gpt-5.6-luna"
 
@@ -47,9 +47,13 @@ One feature, "all together", or "one dispatch" means ONE worktree. Keep implemen
 
 Read applicable project instructions. Ask about concrete conflicts with the agreed plan. Inspect Git metadata with inspect_herdr_repository before dispatch. Use new from freshly fetched origin default unless another base is requested; use continue for existing feature branches/PRs, and branch_from only for explicitly separate or stacked work. A primary checkout branch such as develop/main is a base, not a continue target. Dirty-root approval does not copy uncommitted files; explain this and obtain explicit approval when needed.
 
-Call dispatch_features_to_herdr once, using the invocation authorization provided by the plugin. Report all successes, failures, and partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Stay in Plan mode.`
+Put branch creation, fetching, and worktree setup intent in the tool's Git fields, not as tasks in the implementation plan. The plugin completes that setup before the implementor receives the plan. Always launch the configured implementor; do not carry the orchestrator's current agent or model into the worktree.
 
-const IMPLEMENTOR_PROMPT = `You implement the agreed handoff in this worktree. The handoff is the settled scope, not an invitation to redesign it.
+Call dispatch_features_to_herdr once, using the invocation authorization provided by the plugin. Report all successes, failures, and partial resources. Do not retry an unclear or failed launch. Delivery is not implementation completion. Remain the orchestrator in this checkout.`
+
+export const ORCHESTRATOR_PROMPT = `This is the primary checkout. Your role is orchestration regardless of your selected agent or model: investigate and discuss the plan, but do not implement it here. Only an explicit /feature invocation authorizes the dispatch tool. Do not implement through shell commands, switch agents to bypass this role, or launch worktrees/agents manually. The plugin launches the configured implementor in a separate worktree.`
+
+export const IMPLEMENTOR_PROMPT = `You implement the agreed handoff in this worktree. Workspace setup is already complete. Use the assigned current directory and branch. Do not create another worktree or branch, re-fetch a newer base, or move the work to another checkout to repeat setup instructions in the plan. If the assignment is inconsistent, report it before proceeding. The handoff is the settled scope, not an invitation to redesign it.
 Read applicable project instructions and relevant source, then execute the plan. Reuse existing mechanisms and remove superseded duplication when the agreed change calls for it. Do not add speculative abstractions, compatibility layers, unrelated cleanup, or tests that were not requested.
 Adapt ordinary implementation details to the actual code. If evidence contradicts a material design decision or requires a scope expansion, explain the concrete conflict and ask before proceeding. Distinguish a hypothesis from a reproduced cause. For a bug fix, preserve the reported user-visible outcome rather than substituting an architecture cleanup.
 Do not dispatch other worktrees. Report what was changed, what was actually verified, remaining blockers, and any deviations from the handoff. Do not claim implementation success merely because commands completed.`
@@ -75,6 +79,10 @@ export class FeatureAuthorization {
     return `<feature_authorization>${token}</feature_authorization>`
   }
 
+  isActive(sessionID: string): boolean {
+    return this.pending.get(sessionID)?.messageID !== undefined
+  }
+
   consume(sessionID: string, token: string, latestUserMessageID: string): string[] {
     const entry = this.pending.get(sessionID)
     if (!entry || entry.token !== token || !entry.messageID || entry.messageID !== latestUserMessageID) {
@@ -91,54 +99,44 @@ export class FeatureAuthorization {
 
 export function configureFeatureWorkflow(config: Config, linkedWorktree = false, models = resolveWorkflowModels()): void {
   config.agent ??= {}
-  config.agent[IMPLEMENTOR_AGENT] = {
-    ...config.agent[IMPLEMENTOR_AGENT],
-    description: "Implements the agreed Herdr handoff in its worktree.",
-    mode: "primary",
-    hidden: true,
-    ...models.implementor,
-    prompt: IMPLEMENTOR_PROMPT,
-    permission: {
-      ...config.agent[IMPLEMENTOR_AGENT]?.permission,
-      dispatch_features_to_herdr: "deny",
-      dispatch_to_herdr: "deny",
-      plan_exit: "deny",
-    } as NonNullable<Config["permission"]>,
-  }
   // Retire legacy file/inline registrations as well as the old runtime agent.
   config.agent["herdr-feature-coordinator"] = { disable: true }
+  config.agent["herdr-implementor"] = { disable: true }
   config.command ??= {}
   if (linkedWorktree) {
+    config.agent.build = {
+      ...config.agent.build,
+      ...models.implementor,
+      permission: {
+        ...config.agent.build?.permission,
+        dispatch_features_to_herdr: "deny",
+        dispatch_to_herdr: "deny",
+      } as NonNullable<Config["permission"]>,
+    }
     delete config.command.feature
     return
   }
-  const plan = config.agent.plan ?? {}
-  config.agent.plan = {
-    ...plan,
-    ...models.orchestrator,
-    permission: {
-      ...plan.permission,
-      edit: "deny",
-      task: "deny",
-      plan_exit: "deny",
-      dispatch_to_herdr: "deny",
-      inspect_herdr_repository: "allow",
-      dispatch_features_to_herdr: "allow",
-    } as NonNullable<Config["permission"]>,
+  const orchestratorPermissions = {
+    edit: "deny", task: "deny", plan_exit: "deny", dispatch_to_herdr: "deny",
+    inspect_herdr_repository: "allow", dispatch_features_to_herdr: "allow",
+  }
+  for (const name of new Set(["build", "plan", ...Object.keys(config.agent)])) {
+    const agent = config.agent[name] ?? {}
+    config.agent[name] = {
+      ...agent,
+      ...((name === "plan" || name === "build") ? models.orchestrator : {}),
+      permission: { ...agent.permission, ...orchestratorPermissions } as NonNullable<Config["permission"]>,
+    }
   }
   config.command.feature = {
     description: "Dispatch the agreed plan to a Herdr implementation worktree.",
-    agent: "plan",
-    model: models.orchestrator.model,
     subtask: false,
     template: FEATURE_COMMAND_TEMPLATE,
   }
   config.permission ??= {}
   if (typeof config.permission === "object") {
     Object.assign(config.permission, {
-      dispatch_to_herdr: "deny",
-      dispatch_features_to_herdr: "deny",
-      inspect_herdr_repository: "deny",
+      ...orchestratorPermissions,
     })
   }
 }
